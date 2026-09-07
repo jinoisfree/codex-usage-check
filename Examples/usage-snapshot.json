@@ -1,0 +1,20 @@
+{
+  "plan" : "Plus",
+  "resetCredits" : 2,
+  "source" : "local-json",
+  "updatedAt" : "2026-09-07T00:00:00Z",
+  "windows" : [
+    {
+      "id" : "five-hour",
+      "label" : "5시간 한도",
+      "resetAt" : "2026-09-08T01:35:00Z",
+      "usedPercent" : 1
+    },
+    {
+      "id" : "weekly",
+      "label" : "주간 한도",
+      "resetAt" : "2026-09-14T08:38:00Z",
+      "usedPercent" : 16
+    }
+  ]
+}
