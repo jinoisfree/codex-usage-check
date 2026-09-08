@@ -174,7 +174,7 @@ private struct UsageMeter: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 20) {
-            CircularUsageIndicator(percent: window.usedPercent)
+            CircularUsageIndicator(percent: window.remainingPercent)
                 .frame(width: 44, height: 44)
                 .offset(x: 4)
 
