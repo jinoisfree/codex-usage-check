@@ -27,9 +27,13 @@ let package = Package(
             dependencies: ["CodexUsageCore"],
             path: "WidgetExtension",
             exclude: ["Info.plist", "CodexUsageWidget.entitlements"],
+            swiftSettings: [
+                .unsafeFlags(["-application-extension"])
+            ],
             linkerSettings: [
                 .linkedFramework("SwiftUI"),
-                .linkedFramework("WidgetKit")
+                .linkedFramework("WidgetKit"),
+                .unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])
             ]
         )
     ]
