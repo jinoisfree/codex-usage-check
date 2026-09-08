@@ -1,6 +1,5 @@
 import SwiftUI
-import AppKit
-import CoreGraphics
+import WidgetKit
 import CodexUsageCore
 
 @MainActor
@@ -22,97 +21,29 @@ final class UsageViewModel: ObservableObject {
 
     func refresh() async {
         if let live = try? await AppServerUsageProvider().loadSnapshot() {
-            snapshot = live
+            apply(live)
             return
         }
         guard let url = try? UsageCache.applicationSupportURL(),
               let cached = try? await LocalJSONUsageProvider(url: url).loadSnapshot() else {
             return
         }
-        snapshot = cached
-    }
-}
-
-@MainActor
-final class DesktopWidgetWindowController: NSObject {
-    private let panel: NSPanel
-    private let model: UsageViewModel
-    private var dragStartOrigin: NSPoint?
-    private static let savedOriginKey = "CodexUsageWidget.origin"
-
-    init(model: UsageViewModel) {
-        self.model = model
-        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let size = NSSize(width: 292, height: 200)
-        let defaultOrigin = NSPoint(x: screen.maxX - size.width - 36, y: screen.maxY - size.height - 36)
-        let origin = Self.loadSavedOrigin() ?? defaultOrigin
-        panel = NSPanel(
-            contentRect: NSRect(origin: origin, size: size),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        super.init()
-        panel.contentView = NSHostingView(
-            rootView: UsagePopover(
-                model: model,
-                onDragChanged: { [weak self] translation in
-                    self?.move(by: translation)
-                },
-                onDragEnded: { [weak self] in
-                    self?.finishDragging()
-                }
-            )
-                .frame(width: 276, height: 184)
-                .padding(8)
-        )
-        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)))
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.isMovable = true
-        panel.isMovableByWindowBackground = true
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
+        apply(cached)
     }
 
-    private static func loadSavedOrigin() -> NSPoint? {
-        guard let raw = UserDefaults.standard.string(forKey: savedOriginKey) else { return nil }
-        return NSPointFromString(raw)
-    }
-
-    private func move(by translation: CGSize) {
-        if dragStartOrigin == nil {
-            dragStartOrigin = panel.frame.origin
-        }
-        guard let start = dragStartOrigin else { return }
-        panel.setFrameOrigin(NSPoint(
-            x: start.x + translation.width,
-            y: start.y - translation.height
-        ))
-    }
-
-    private func finishDragging() {
-        guard dragStartOrigin != nil else { return }
-        UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: Self.savedOriginKey)
-        dragStartOrigin = nil
-    }
-
-    func show() {
-        panel.orderFrontRegardless()
-        model.startPolling()
+    private func apply(_ next: UsageSnapshot) {
+        snapshot = next
+        try? UsageCache.write(next)
+        WidgetCenter.shared.reloadTimelines(ofKind: "CodexUsageWidget")
     }
 }
 
 @MainActor
 final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
     let model = UsageViewModel()
-    private var desktopController: DesktopWidgetWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        desktopController = DesktopWidgetWindowController(model: model)
-        desktopController?.show()
+        model.startPolling()
     }
 }
 
@@ -140,8 +71,6 @@ struct CodexUsageMenuBarApp: App {
 
 private struct UsagePopover: View {
     @ObservedObject var model: UsageViewModel
-    var onDragChanged: ((CGSize) -> Void)? = nil
-    var onDragEnded: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -192,15 +121,6 @@ private struct UsagePopover: View {
         .padding(8)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 4)
-                .onChanged { value in
-                    onDragChanged?(value.translation)
-                }
-                .onEnded { _ in
-                    onDragEnded?()
-                }
-        )
     }
 
     private var sourceLabel: String {

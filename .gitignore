@@ -1,4 +1,5 @@
 .build/
 .DS_Store
 AppBundle/Codex Usage.app/Contents/MacOS/*
+AppBundle/Codex Usage.app/Contents/PlugIns/*
 AppBundle/Codex Usage.app/Contents/_CodeSignature/

@@ -5,6 +5,7 @@ SCRIPT_DIR="${0:A:h}"
 APP_EXECUTABLE="$SCRIPT_DIR/AppBundle/Codex Usage.app/Contents/MacOS/CodexUsageMenuBar"
 LOG_PATH="/private/tmp/codex-usage-widget.log"
 
+zsh "$SCRIPT_DIR/build-widget-app.sh"
 nohup "$APP_EXECUTABLE" >"$LOG_PATH" 2>&1 &
-print "Codex Usage desktop widget started: $APP_EXECUTABLE"
+print "Codex Usage menu bar app started: $APP_EXECUTABLE"
 print "Log: $LOG_PATH"

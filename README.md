@@ -9,8 +9,9 @@
 - 자격 증명이나 네트워크를 사용하지 않는 오프라인 fixture 공급자
 - 로컬 `codex app-server`를 통한 활성 ChatGPT 계정·rate limit 읽기
 - 메뉴 막대 팝오버 앱 소스
-- 녹색 강조색의 초소형(`300×210`) 아이콘 뒤 바탕화면 desktop-level 오버레이 창
-- WidgetKit 확장 소스(`WidgetExtension/CodexUsageWidget.swift`)
+- 녹색 강조색의 `systemSmall` WidgetKit 바탕화면 위젯
+- 위젯 슬롯이 위치와 정사각형 크기를 관리하므로 화면 밖으로 사라지지 않는 앱 번들
+- WidgetKit 확장 소스와 수동 번들 생성 스크립트
 - ISO-8601 JSON 캐시 공급자와 오프라인 smoke 검증
 - `Examples/usage-snapshot.json`으로 로컬 캐시 입력 형식 제공
 
@@ -23,6 +24,11 @@
 한도로 따라갑니다. 이메일과 토큰은 저장하거나 화면에 표시하지 않고, 계정 변경 감지용
 단방향 해시만 메모리에 유지합니다.
 
+메뉴 막대 앱이 최신 스냅샷을
+`~/Library/Application Support/com.jino.codex-usage/usage-snapshot.json`에 기록하고,
+WidgetKit 확장이 App Group(`group.com.jino.codex-usage`)의 공유 캐시를 읽습니다. 새 값을
+저장하면 해당 위젯의 타임라인도 갱신합니다.
+
 App Server에 연결할 수 없으면 승인된 로컬 JSON 캐시, 그 다음 샘플 데이터 순으로
 fallback합니다. 샘플 데이터는 실제 계정 사용량으로 해석하면 안 됩니다.
 
@@ -32,6 +38,7 @@ fallback합니다. 샘플 데이터는 실제 계정 사용량으로 해석하�
 cd "/Users/jinoisfree/.codex/visualizations/2026/09/07/01a07ba6-7a03-71f1-a43b-5ab957ad7459/CodexUsageWidgetMVP"
 swift run CodexUsageCoreSmoke
 swift build
+zsh ./build-widget-app.sh
 ```
 
 활성 Codex 계정에 대한 읽기 전용 연결을 확인하려면 다음을 실행합니다.
@@ -40,11 +47,16 @@ swift build
 CODEX_USAGE_LIVE_PROBE=1 swift run CodexUsageCoreSmoke
 ```
 
-메뉴 막대·바탕화면 MVP 앱은 `AppBundle/Codex Usage.app`으로 묶이며, 현재는 로컬 개발용
-adhoc 서명 번들입니다. WidgetKit 확장은 별도 Xcode Widget Extension target과 App Group
-설정이 필요합니다.
+메뉴 막대·WidgetKit 앱은 `AppBundle/Codex Usage.app`으로 묶이며, 현재는 로컬 개발용
+adhoc 서명 번들입니다. `build-widget-app.sh`가 `Contents/PlugIns` 아래에
+샌드박스 및 App Group 권한이 포함된 `CodexUsageWidgetExtension.appex`를 넣습니다.
 
-바탕화면 오버레이를 직접 시작하려면 다음을 실행합니다.
+앱을 한 번 실행한 뒤 macOS 위젯 갤러리에서 `Codex 사용량`을 추가하고 바탕화면의
+달력 위젯과 같은 작은 정사각형 슬롯에 배치합니다. 위치와 크기는 macOS가 관리하므로
+일반 창처럼 화면 밖으로 드래그할 수 없습니다. 위젯 갤러리에 보이지 않으면 앱을 한 번
+종료했다가 다시 실행한 뒤 위젯 갤러리를 열어 등록합니다.
+
+메뉴 막대 앱과 위젯 번들을 빌드해 직접 시작하려면 다음을 실행합니다.
 
 ```sh
 cd "/Users/jinoisfree/.codex/visualizations/2026/09/07/01a07ba6-7a03-71f1-a43b-5ab957ad7459/CodexUsageWidgetMVP"
@@ -82,6 +94,3 @@ launchctl kickstart -k gui/$(id -u)/com.jino.codex-usage.desktop
 
 메뉴 막대 앱은 해당 파일을 읽지 못하면 샘플 데이터를 표시합니다. 샘플 데이터는
 실제 계정 사용량으로 해석하면 안 됩니다.
-
-`WidgetExtension/CodexUsageWidget.swift`는 Xcode의 Widget Extension target에 추가하고,
-메뉴 막대 앱과 동일한 App Group을 연결하면 캐시를 공유하는 다음 단계로 확장할 수 있습니다.

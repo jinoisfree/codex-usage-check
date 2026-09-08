@@ -9,7 +9,8 @@ let package = Package(
     products: [
         .library(name: "CodexUsageCore", targets: ["CodexUsageCore"]),
         .executable(name: "CodexUsageMenuBar", targets: ["CodexUsageMenuBar"]),
-        .executable(name: "CodexUsageCoreSmoke", targets: ["CodexUsageCoreSmoke"])
+        .executable(name: "CodexUsageCoreSmoke", targets: ["CodexUsageCoreSmoke"]),
+        .executable(name: "CodexUsageWidgetExtension", targets: ["CodexUsageWidgetExtension"])
     ],
     targets: [
         .target(name: "CodexUsageCore"),
@@ -20,6 +21,16 @@ let package = Package(
         .executableTarget(
             name: "CodexUsageCoreSmoke",
             dependencies: ["CodexUsageCore"]
+        ),
+        .executableTarget(
+            name: "CodexUsageWidgetExtension",
+            dependencies: ["CodexUsageCore"],
+            path: "WidgetExtension",
+            exclude: ["Info.plist", "CodexUsageWidget.entitlements"],
+            linkerSettings: [
+                .linkedFramework("SwiftUI"),
+                .linkedFramework("WidgetKit")
+            ]
         )
     ]
 )

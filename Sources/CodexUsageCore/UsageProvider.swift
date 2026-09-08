@@ -40,6 +40,7 @@ public struct FixtureUsageProvider: UsageProvider {
 
 public enum UsageCache {
     public static let fileName = "usage-snapshot.json"
+    public static let appGroupIdentifier = "group.com.jino.codex-usage"
 
     public static func applicationSupportURL(
         fileManager: FileManager = .default,
@@ -54,5 +55,30 @@ public enum UsageCache {
         let directory = base.appendingPathComponent(bundleIdentifier, isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent(fileName)
+    }
+
+    public static func sharedSnapshotURL(
+        fileManager: FileManager = .default
+    ) -> URL? {
+        fileManager
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)?
+            .appendingPathComponent(fileName)
+    }
+
+    public static func write(
+        _ snapshot: UsageSnapshot,
+        fileManager: FileManager = .default
+    ) throws {
+        let url = try applicationSupportURL(fileManager: fileManager)
+        let data = try UsageSnapshotCodec.encoder.encode(snapshot)
+        try data.write(to: url, options: .atomic)
+
+        if let sharedURL = sharedSnapshotURL(fileManager: fileManager) {
+            try fileManager.createDirectory(
+                at: sharedURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: sharedURL, options: .atomic)
+        }
     }
 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import WidgetKit
+import Foundation
 import CodexUsageCore
 
 struct CodexUsageEntry: TimelineEntry {
@@ -13,13 +14,22 @@ struct CodexUsageProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (CodexUsageEntry) -> Void) {
-        completion(CodexUsageEntry(date: .now, snapshot: .sample))
+        completion(CodexUsageEntry(date: .now, snapshot: loadSnapshot()))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<CodexUsageEntry>) -> Void) {
-        let entry = CodexUsageEntry(date: .now, snapshot: .sample)
+        let entry = CodexUsageEntry(date: .now, snapshot: loadSnapshot())
         let nextRefresh = Calendar.current.date(byAdding: .minute, value: 15, to: .now) ?? .now.addingTimeInterval(900)
         completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
+    }
+
+    private func loadSnapshot() -> UsageSnapshot {
+        guard let url = UsageCache.sharedSnapshotURL(),
+              let data = try? Data(contentsOf: url),
+              let snapshot = try? UsageSnapshotCodec.iso8601.decode(UsageSnapshot.self, from: data) else {
+            return .sample
+        }
+        return snapshot
     }
 }
 
@@ -27,36 +37,57 @@ struct CodexUsageWidgetView: View {
     let entry: CodexUsageEntry
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Codex", systemImage: "chevron.left.forwardslash.chevron.right")
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 21, height: 21)
+                    .background(.green.gradient, in: RoundedRectangle(cornerRadius: 6))
+                Text("Codex")
                     .font(.headline.weight(.bold))
                 Spacer()
                 Text(entry.snapshot.plan)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(entry.snapshot.windows) { window in
-                HStack(spacing: 8) {
-                    ProgressView(value: Double(window.remainingPercent), total: 100)
-                        .tint(.green)
-                    Text("\(window.remainingPercent)%")
-                        .font(.caption.weight(.bold).monospacedDigit())
-                        .frame(width: 38, alignment: .trailing)
-                }
-                Text(window.label)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+
+            ForEach(Array(entry.snapshot.windows.prefix(2))) { window in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Text(shortLabel(for: window))
+                            .font(.caption2.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer()
+                        Text("\(window.remainingPercent)% 남음")
+                            .font(.caption2.weight(.bold).monospacedDigit())
+                            .foregroundStyle(.green)
+                            .lineLimit(1)
+                    }
+                    ProgressView(value: Double(window.remainingPercent), total: 100)
+                        .tint(.green)
+                    Text(window.resetAt, style: .relative)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+
             HStack {
-                Text("초기화 크레딧 \(entry.snapshot.resetCredits)회")
+                Label("남은 양", systemImage: "chart.bar.fill")
                 Spacer()
                 Text(entry.date, style: .time)
             }
-            .font(.caption2)
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
         }
         .containerBackground(.fill.tertiary, for: .widget)
+    }
+
+    private func shortLabel(for window: UsageWindow) -> String {
+        window.label.replacingOccurrences(of: " 한도", with: "")
     }
 }
 
@@ -68,8 +99,8 @@ struct CodexUsageWidget: Widget {
             CodexUsageWidgetView(entry: entry)
         }
         .configurationDisplayName("Codex 사용량")
-        .description("5시간·주간 Codex 사용량과 초기화 시각을 표시합니다.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .description("5시간·주간 Codex 남은 양을 표시합니다.")
+        .supportedFamilies([.systemSmall])
     }
 }
 
