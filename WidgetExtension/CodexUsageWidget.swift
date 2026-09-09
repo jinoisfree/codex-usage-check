@@ -35,6 +35,7 @@ struct CodexUsageProvider: TimelineProvider {
 
 struct CodexUsageWidgetView: View {
     let entry: CodexUsageEntry
+    @Environment(\.widgetRenderingMode) private var widgetRenderingMode
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -61,11 +62,10 @@ struct CodexUsageWidgetView: View {
                         Spacer()
                         Text("\(window.remainingPercent)% 남음")
                             .font(.caption2.weight(.bold).monospacedDigit())
-                            .foregroundStyle(.green)
+                            .foregroundStyle(remainingAmountColor)
                             .lineLimit(1)
                     }
-                    ProgressView(value: Double(window.remainingPercent), total: 100)
-                        .tint(.green)
+                    UsageProgressBar(remainingPercent: window.remainingPercent)
                     Text(window.resetAt, style: .relative)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -83,11 +83,56 @@ struct CodexUsageWidgetView: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
         }
-        .containerBackground(.fill.tertiary, for: .widget)
+        .containerBackground(for: .widget) {
+            if widgetRenderingMode == .fullColor {
+                Color(red: 0.02, green: 0.22, blue: 0.35)
+                    .opacity(0.78)
+            } else {
+                Rectangle()
+                    .fill(.fill.tertiary)
+            }
+        }
+    }
+
+    private var remainingAmountColor: Color {
+        widgetRenderingMode == .fullColor ? .green : .white
     }
 
     private func shortLabel(for window: UsageWindow) -> String {
         window.label.replacingOccurrences(of: " 한도", with: "")
+    }
+}
+
+private struct UsageProgressBar: View {
+    let remainingPercent: Int
+    @Environment(\.widgetRenderingMode) private var widgetRenderingMode
+
+    private var progress: CGFloat {
+        CGFloat(min(max(remainingPercent, 0), 100)) / 100
+    }
+
+    private var fillColor: Color {
+        widgetRenderingMode == .fullColor ? .green : .white
+    }
+
+    private var trackColor: Color {
+        widgetRenderingMode == .fullColor ? .green.opacity(0.28) : .white.opacity(0.24)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(trackColor)
+                Capsule(style: .continuous)
+                    .fill(fillColor)
+                    .frame(width: proxy.size.width * progress)
+            }
+        }
+        .frame(height: 5)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("남은 사용량")
+        .accessibilityValue("\(remainingPercent)%")
     }
 }
 
