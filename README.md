@@ -26,8 +26,12 @@
 
 메뉴 막대 앱이 최신 스냅샷을
 `~/Library/Application Support/com.jino.codex-usage/usage-snapshot.json`에 기록하고,
-WidgetKit 확장이 App Group(`group.com.jino.codex-usage`)의 공유 캐시를 읽습니다. 새 값을
-저장하면 해당 위젯의 타임라인도 갱신합니다.
+WidgetKit 확장이 먼저 자신의 샌드박스 컨테이너 안 캐시를 읽습니다. 로컬 adhoc 서명에서는
+App Group(`group.com.jino.codex-usage`)이 Team ID·프로비저닝 없이 보호될 수 있으므로, 로컬
+실행 경로에서는 App Group 조회를 건너뛰고 메뉴 막대 앱이 같은 JSON을 위젯 확장의
+컨테이너에도 미러링합니다. 정식 서명·프로비저닝 환경에서는 App Group 공유 캐시를 사용할
+수 있도록 entitlement와 보조 API를 남겨두었습니다. 새 값을 저장하면 해당 위젯의 타임라인도
+갱신합니다.
 
 App Server에 연결할 수 없으면 승인된 로컬 JSON 캐시, 그 다음 샘플 데이터 순으로
 fallback합니다. 샘플 데이터는 실제 계정 사용량으로 해석하면 안 됩니다.

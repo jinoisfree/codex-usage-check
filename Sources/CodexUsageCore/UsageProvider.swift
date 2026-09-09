@@ -40,11 +40,13 @@ public struct FixtureUsageProvider: UsageProvider {
 
 public enum UsageCache {
     public static let fileName = "usage-snapshot.json"
+    public static let applicationBundleIdentifier = "com.jino.codex-usage"
+    public static let widgetBundleIdentifier = "com.jino.codex-usage.widget"
     public static let appGroupIdentifier = "group.com.jino.codex-usage"
 
     public static func applicationSupportURL(
         fileManager: FileManager = .default,
-        bundleIdentifier: String = "com.jino.codex-usage"
+        bundleIdentifier: String = applicationBundleIdentifier
     ) throws -> URL {
         let base = try fileManager.url(
             for: .applicationSupportDirectory,
@@ -55,6 +57,20 @@ public enum UsageCache {
         let directory = base.appendingPathComponent(bundleIdentifier, isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent(fileName)
+    }
+
+    public static func widgetSandboxSnapshotURL(
+        fileManager: FileManager = .default
+    ) -> URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Containers", isDirectory: true)
+            .appendingPathComponent(widgetBundleIdentifier, isDirectory: true)
+            .appendingPathComponent("Data", isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent(applicationBundleIdentifier, isDirectory: true)
+            .appendingPathComponent(fileName)
     }
 
     public static func sharedSnapshotURL(
@@ -73,12 +89,11 @@ public enum UsageCache {
         let data = try UsageSnapshotCodec.encoder.encode(snapshot)
         try data.write(to: url, options: .atomic)
 
-        if let sharedURL = sharedSnapshotURL(fileManager: fileManager) {
-            try fileManager.createDirectory(
-                at: sharedURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: sharedURL, options: .atomic)
-        }
+        let widgetURL = widgetSandboxSnapshotURL(fileManager: fileManager)
+        try fileManager.createDirectory(
+            at: widgetURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: widgetURL, options: .atomic)
     }
 }

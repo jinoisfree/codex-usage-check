@@ -19,17 +19,18 @@ struct CodexUsageProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<CodexUsageEntry>) -> Void) {
         let entry = CodexUsageEntry(date: .now, snapshot: loadSnapshot())
-        let nextRefresh = Calendar.current.date(byAdding: .minute, value: 15, to: .now) ?? .now.addingTimeInterval(900)
+        let nextRefresh = Calendar.current.date(byAdding: .minute, value: 5, to: .now) ?? .now.addingTimeInterval(300)
         completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
     }
 
     private func loadSnapshot() -> UsageSnapshot {
-        guard let url = UsageCache.sharedSnapshotURL(),
-              let data = try? Data(contentsOf: url),
-              let snapshot = try? UsageSnapshotCodec.iso8601.decode(UsageSnapshot.self, from: data) else {
-            return .sample
+        if let url = try? UsageCache.applicationSupportURL(),
+           let data = try? Data(contentsOf: url),
+           let snapshot = try? UsageSnapshotCodec.iso8601.decode(UsageSnapshot.self, from: data) {
+            return snapshot
         }
-        return snapshot
+
+        return .sample
     }
 }
 
@@ -78,7 +79,7 @@ struct CodexUsageWidgetView: View {
             HStack {
                 Label("남은 양", systemImage: "chart.bar.fill")
                 Spacer()
-                Text(entry.date, style: .time)
+                Text(entry.snapshot.updatedAt, style: .time)
             }
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)

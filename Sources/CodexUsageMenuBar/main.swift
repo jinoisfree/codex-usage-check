@@ -1,5 +1,6 @@
 import SwiftUI
 import WidgetKit
+import Foundation
 import CodexUsageCore
 
 @MainActor
@@ -7,11 +8,12 @@ final class UsageViewModel: ObservableObject {
     @Published var snapshot = UsageSnapshot.sample
     @Published var showingUsed = false
 
+    private var pollingTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
 
     func startPolling() {
-        guard refreshTask == nil else { return }
-        refreshTask = Task { [weak self] in
+        guard pollingTask == nil else { return }
+        pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
                 try? await Task.sleep(for: .seconds(300))
@@ -20,6 +22,21 @@ final class UsageViewModel: ObservableObject {
     }
 
     func refresh() async {
+        if let refreshTask {
+            await refreshTask.value
+            return
+        }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performRefresh()
+        }
+        refreshTask = task
+        await task.value
+        refreshTask = nil
+    }
+
+    private func performRefresh() async {
         if let live = try? await AppServerUsageProvider().loadSnapshot() {
             apply(live)
             return
@@ -32,8 +49,15 @@ final class UsageViewModel: ObservableObject {
     }
 
     private func apply(_ next: UsageSnapshot) {
+        let widgetURL = UsageCache.widgetSandboxSnapshotURL()
+        do {
+            try UsageCache.write(next)
+            let data = try Data(contentsOf: widgetURL)
+            _ = try UsageSnapshotCodec.iso8601.decode(UsageSnapshot.self, from: data)
+        } catch {
+            return
+        }
         snapshot = next
-        try? UsageCache.write(next)
         WidgetCenter.shared.reloadTimelines(ofKind: "CodexUsageWidget")
     }
 }
