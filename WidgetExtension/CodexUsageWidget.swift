@@ -41,17 +41,16 @@ struct CodexUsageWidgetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 21, height: 21)
-                    .background(.green.gradient, in: RoundedRectangle(cornerRadius: 6))
                 Text("Codex")
                     .font(.headline.weight(.bold))
+                    .lineLimit(1)
+                    .layoutPriority(1)
                 Spacer()
                 Text(entry.snapshot.plan)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
 
             ForEach(Array(entry.snapshot.windows.prefix(2))) { window in

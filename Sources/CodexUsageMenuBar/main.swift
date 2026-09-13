@@ -65,9 +65,43 @@ final class UsageViewModel: ObservableObject {
 @MainActor
 final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
     let model = UsageViewModel()
+    private var statusItem: NSStatusItem?
+    private let popover = NSPopover()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ProcessInfo.processInfo.disableAutomaticTermination("Codex Usage background refresh")
+        NSApplication.shared.setActivationPolicy(.accessory)
+
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem.button {
+            button.image = NSImage(
+                systemSymbolName: "gauge.with.dots.needle.67percent",
+                accessibilityDescription: "Codex 사용량"
+            )
+            button.title = "Codex"
+            button.target = self
+            button.action = #selector(togglePopover(_:))
+        }
+        self.statusItem = statusItem
+
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 292, height: 220)
+        popover.contentViewController = NSHostingController(
+            rootView: UsagePopover(model: model)
+                .frame(width: 276)
+                .padding(8)
+                .task { await self.model.refresh() }
+        )
         model.startPolling()
+    }
+
+    @objc private func togglePopover(_ sender: Any?) {
+        guard let button = statusItem?.button else { return }
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
     }
 }
 
@@ -76,20 +110,9 @@ struct CodexUsageMenuBarApp: App {
     @NSApplicationDelegateAdaptor(CodexUsageAppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
-            UsagePopover(model: appDelegate.model)
-                .frame(width: 276)
-                .padding(8)
-                .task { await appDelegate.model.refresh() }
-        } label: {
-            Label(menuBarLabel, systemImage: "gauge.with.dots.needle.67percent")
+        Settings {
+            EmptyView()
         }
-        .menuBarExtraStyle(.window)
-    }
-
-    private var menuBarLabel: String {
-        guard let window = appDelegate.model.snapshot.windows.first else { return "Codex" }
-        return "Codex \(appDelegate.model.showingUsed ? window.usedPercent : window.remainingPercent)%"
     }
 }
 
