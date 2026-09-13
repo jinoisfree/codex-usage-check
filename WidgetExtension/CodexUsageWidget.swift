@@ -53,23 +53,31 @@ struct CodexUsageWidgetView: View {
                     .truncationMode(.tail)
             }
 
-            ForEach(Array(entry.snapshot.windows.prefix(2))) { window in
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 5) {
-                        Text(shortLabel(for: window))
-                            .font(.caption2.weight(.semibold))
-                            .lineLimit(1)
-                        Spacer()
-                        Text("\(window.remainingPercent)% 남음")
-                            .font(.caption2.weight(.bold).monospacedDigit())
-                            .foregroundStyle(remainingAmountColor)
+            if let statusMessage = entry.snapshot.statusMessage {
+                Text(statusMessage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .multilineTextAlignment(.center)
+            } else {
+                ForEach(Array(entry.snapshot.windows.prefix(2))) { window in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 5) {
+                            Text(shortLabel(for: window))
+                                .font(.caption2.weight(.semibold))
+                                .lineLimit(1)
+                            Spacer()
+                            Text("\(window.remainingPercent)% 남음")
+                                .font(.caption2.weight(.bold).monospacedDigit())
+                                .foregroundStyle(remainingAmountColor)
+                                .lineLimit(1)
+                        }
+                        UsageProgressBar(remainingPercent: window.remainingPercent)
+                        Text(window.resetAt, style: .relative)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    UsageProgressBar(remainingPercent: window.remainingPercent)
-                    Text(window.resetAt, style: .relative)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
             }
 

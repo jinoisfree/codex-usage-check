@@ -19,10 +19,11 @@
 
 `LocalJSONUsageProvider`는 앱 지원 디렉터리의 `usage-snapshot.json`만 읽습니다.
 `AppServerUsageProvider`는 공식 Codex App Server의 `account/read`와
-`account/rateLimits/read`를 사용합니다. `account/updated` 이벤트를 직접 구독하는 대신
-5분마다 활성 계정을 다시 읽으므로, Codex에서 계정을 바꾸면 다음 갱신부터 새 계정의
-한도로 따라갑니다. 이메일과 토큰은 저장하거나 화면에 표시하지 않고, 계정 변경 감지용
-단방향 해시만 메모리에 유지합니다.
+`account/rateLimits/read`를 사용합니다. `~/.codex/auth.json`이 있는 디렉터리를 감시하고
+계정 fingerprint가 바뀌면 기존 사용량을 즉시 숨긴 뒤 새 계정의 한도를 다시 읽습니다.
+5분 폴링은 파일 변경 이벤트를 놓쳤을 때의 안전망으로 유지합니다. 이메일과 토큰은
+저장하거나 화면에 표시하지 않고, 계정 변경 감지용 단방향 해시만 캐시에 기록합니다.
+조회 도중 계정이 다시 바뀌면 이전 응답은 폐기합니다.
 
 메뉴 막대 앱이 최신 스냅샷을
 `~/Library/Application Support/com.jino.codex-usage/usage-snapshot.json`에 기록하고,
@@ -31,10 +32,12 @@ App Group(`group.com.jino.codex-usage`)이 Team ID·프로비저닝 없이 보�
 실행 경로에서는 App Group 조회를 건너뛰고 메뉴 막대 앱이 같은 JSON을 위젯 확장의
 컨테이너에도 미러링합니다. 정식 서명·프로비저닝 환경에서는 App Group 공유 캐시를 사용할
 수 있도록 entitlement와 보조 API를 남겨두었습니다. 새 값을 저장하면 해당 위젯의 타임라인도
-갱신합니다.
+갱신합니다. 계정별 캐시를 별도로 저장하고, fallback 시에도 현재 계정 fingerprint와
+일치하는 캐시만 허용합니다.
 
-App Server에 연결할 수 없으면 승인된 로컬 JSON 캐시, 그 다음 샘플 데이터 순으로
-fallback합니다. 샘플 데이터는 실제 계정 사용량으로 해석하면 안 됩니다.
+App Server에 연결할 수 없으면 다른 계정이나 오래된 사용량을 표시하지 않고 갱신 상태를
+유지하며 10초 간격으로 재시도합니다. 샘플 데이터는 위젯 미리보기 전용이며 실제 계정
+사용량으로 해석하면 안 됩니다.
 
 ## 빌드
 

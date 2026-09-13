@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public protocol UsageProvider: Sendable {
@@ -7,12 +8,43 @@ public protocol UsageProvider: Sendable {
 public enum UsageProviderError: LocalizedError, Equatable {
     case missingFile(URL)
     case invalidData
+    case accountChanged
 
     public var errorDescription: String? {
         switch self {
         case .missingFile(let url): return "사용량 캐시 파일이 없습니다: \(url.path)"
         case .invalidData: return "사용량 캐시 형식이 올바르지 않습니다."
+        case .accountChanged: return "사용량 조회 중 활성 계정이 변경되었습니다."
         }
+    }
+}
+
+public enum AccountIdentity {
+    public static func authURL(fileManager: FileManager = .default) -> URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("auth.json")
+    }
+
+    public static func activeFingerprint(fileManager: FileManager = .default) throws -> String {
+        try fingerprint(fromAuthData: Data(contentsOf: authURL(fileManager: fileManager)))
+    }
+
+    public static func fingerprint(fromAuthData data: Data) throws -> String {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = root["tokens"] as? [String: Any],
+              let accountID = tokens["account_id"] as? String,
+              !accountID.isEmpty else {
+            throw UsageProviderError.invalidData
+        }
+        return fingerprint(accountID)
+    }
+
+    public static func fingerprint(_ accountID: String) -> String {
+        String(SHA256.hash(data: Data(accountID.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+            .prefix(12))
     }
 }
 
@@ -73,6 +105,15 @@ public enum UsageCache {
             .appendingPathComponent(fileName)
     }
 
+    public static func accountSnapshotURL(
+        for accountKey: String,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        try applicationSupportURL(fileManager: fileManager)
+            .deletingLastPathComponent()
+            .appendingPathComponent("usage-\(accountKey).json")
+    }
+
     public static func sharedSnapshotURL(
         fileManager: FileManager = .default
     ) -> URL? {
@@ -95,5 +136,12 @@ public enum UsageCache {
             withIntermediateDirectories: true
         )
         try data.write(to: widgetURL, options: .atomic)
+
+        if snapshot.source == "app-server", let accountKey = snapshot.accountKey {
+            try data.write(
+                to: try accountSnapshotURL(for: accountKey, fileManager: fileManager),
+                options: .atomic
+            )
+        }
     }
 }

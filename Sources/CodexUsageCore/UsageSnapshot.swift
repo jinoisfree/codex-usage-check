@@ -23,6 +23,7 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
     public let resetCredits: Int
     public let source: String
     public let accountKey: String?
+    public let statusMessage: String?
 
     public init(
         plan: String,
@@ -30,7 +31,8 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         windows: [UsageWindow],
         resetCredits: Int,
         source: String,
-        accountKey: String? = nil
+        accountKey: String? = nil,
+        statusMessage: String? = nil
     ) {
         self.plan = plan
         self.updatedAt = updatedAt
@@ -38,6 +40,7 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         self.resetCredits = max(resetCredits, 0)
         self.source = source
         self.accountKey = accountKey
+        self.statusMessage = statusMessage
     }
 
     public static let sample: UsageSnapshot = {
@@ -57,6 +60,18 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
             accountKey: nil
         )
     }()
+
+    public static func accountSwitching(accountKey: String?) -> UsageSnapshot {
+        UsageSnapshot(
+            plan: "Codex",
+            updatedAt: .now,
+            windows: [],
+            resetCredits: 0,
+            source: "account-switching",
+            accountKey: accountKey,
+            statusMessage: accountKey == nil ? "로그인이 필요합니다" : "새 계정 사용량 갱신 중"
+        )
+    }
 }
 
 public enum UsageSnapshotCodec {

@@ -1,6 +1,7 @@
 import SwiftUI
 import WidgetKit
 import Foundation
+import Darwin
 import CodexUsageCore
 
 @MainActor
@@ -9,43 +10,82 @@ final class UsageViewModel: ObservableObject {
     @Published var showingUsed = false
 
     private var pollingTask: Task<Void, Never>?
-    private var refreshTask: Task<Void, Never>?
+    private var refreshTask: Task<UsageSnapshot?, Never>?
+    private var retryTask: Task<Void, Never>?
+    private var observedAccountKey: String?
+    private var refreshGeneration = 0
 
     func startPolling() {
         guard pollingTask == nil else { return }
+        accountDidChange()
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refresh()
                 try? await Task.sleep(for: .seconds(300))
+                await self?.refresh()
             }
         }
     }
 
+    func accountDidChange() {
+        let nextAccountKey = try? AccountIdentity.activeFingerprint()
+        guard nextAccountKey != observedAccountKey || snapshot.source == "sample" else { return }
+
+        observedAccountKey = nextAccountKey
+        refreshGeneration += 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        retryTask?.cancel()
+        retryTask = nil
+        apply(.accountSwitching(accountKey: nextAccountKey))
+
+        if nextAccountKey != nil {
+            Task { await refresh() }
+        }
+    }
+
     func refresh() async {
+        let activeAccountKey = try? AccountIdentity.activeFingerprint()
+        if activeAccountKey != observedAccountKey {
+            accountDidChange()
+            return
+        }
+        guard let expectedAccountKey = activeAccountKey else { return }
+
         if let refreshTask {
-            await refreshTask.value
+            _ = await refreshTask.value
             return
         }
 
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.performRefresh()
+        let generation = refreshGeneration
+        let task = Task {
+            try? await AppServerUsageProvider().loadSnapshot()
         }
         refreshTask = task
-        await task.value
-        refreshTask = nil
-    }
+        let live = await task.value
 
-    private func performRefresh() async {
-        if let live = try? await AppServerUsageProvider().loadSnapshot() {
+        guard generation == refreshGeneration,
+              observedAccountKey == expectedAccountKey,
+              (try? AccountIdentity.activeFingerprint()) == expectedAccountKey else {
+            return
+        }
+        refreshTask = nil
+
+        if let live, live.accountKey == expectedAccountKey {
             apply(live)
             return
         }
-        guard let url = try? UsageCache.applicationSupportURL(),
-              let cached = try? await LocalJSONUsageProvider(url: url).loadSnapshot() else {
-            return
+
+        scheduleRetry()
+    }
+
+    private func scheduleRetry() {
+        guard retryTask == nil else { return }
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled else { return }
+            self?.retryTask = nil
+            await self?.refresh()
         }
-        apply(cached)
     }
 
     private func apply(_ next: UsageSnapshot) {
@@ -63,10 +103,44 @@ final class UsageViewModel: ObservableObject {
 }
 
 @MainActor
+final class AccountChangeMonitor {
+    private var source: DispatchSourceFileSystemObject?
+    private var descriptor: CInt = -1
+    private var debounceTask: Task<Void, Never>?
+
+    func start(onChange: @escaping @MainActor @Sendable () -> Void) {
+        guard source == nil else { return }
+        let directory = AccountIdentity.authURL().deletingLastPathComponent()
+        descriptor = open(directory.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .rename, .delete],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            Task { @MainActor in
+                self?.debounceTask?.cancel()
+                self?.debounceTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard !Task.isCancelled else { return }
+                    onChange()
+                }
+            }
+        }
+        source.setCancelHandler { [descriptor] in close(descriptor) }
+        source.resume()
+        self.source = source
+    }
+}
+
+@MainActor
 final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
     let model = UsageViewModel()
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
+    private let accountMonitor = AccountChangeMonitor()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ProcessInfo.processInfo.disableAutomaticTermination("Codex Usage background refresh")
@@ -93,6 +167,7 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
                 .task { await self.model.refresh() }
         )
         model.startPolling()
+        accountMonitor.start { [weak model = model] in model?.accountDidChange() }
     }
 
     @objc private func togglePopover(_ sender: Any?) {
@@ -137,16 +212,23 @@ private struct UsagePopover: View {
                 Circle().fill(.green).frame(width: 7, height: 7)
             }
 
-            HStack(spacing: 10) {
-                ForEach(model.snapshot.windows) { window in
-                    UsageMeter(window: window, showingUsed: model.showingUsed)
-                        .onTapGesture { model.showingUsed.toggle() }
+            if let statusMessage = model.snapshot.statusMessage {
+                Text(statusMessage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 72)
+            } else {
+                HStack(spacing: 10) {
+                    ForEach(model.snapshot.windows) { window in
+                        UsageMeter(window: window, showingUsed: model.showingUsed)
+                            .onTapGesture { model.showingUsed.toggle() }
+                    }
                 }
             }
 
             HStack {
-                Label("정상", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                Label(statusLabel, systemImage: statusIcon)
+                    .foregroundStyle(model.snapshot.statusMessage == nil ? .green : .orange)
                 Spacer()
                 Text("초기화 크레딧 \(model.snapshot.resetCredits)회")
             }
@@ -174,8 +256,17 @@ private struct UsagePopover: View {
         switch model.snapshot.source {
         case "app-server": return "활성 계정"
         case "sample": return "샘플 데이터"
+        case "account-switching": return "계정 확인 중"
         default: return "로컬 캐시"
         }
+    }
+
+    private var statusLabel: String {
+        model.snapshot.statusMessage == nil ? "정상" : "갱신 중"
+    }
+
+    private var statusIcon: String {
+        model.snapshot.statusMessage == nil ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath.circle.fill"
     }
 }
 

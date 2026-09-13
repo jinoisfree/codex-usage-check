@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 /// Reads the active Codex account and rate-limit buckets through the local
@@ -21,8 +20,8 @@ public struct AppServerUsageProvider: UsageProvider {
     private static func defaultExecutableURL() -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let candidates = [
-            home.appendingPathComponent(".local/bin/codex"),
             URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"),
+            home.appendingPathComponent(".local/bin/codex"),
             URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
             URL(fileURLWithPath: "/usr/local/bin/codex")
         ]
@@ -31,6 +30,7 @@ public struct AppServerUsageProvider: UsageProvider {
     }
 
     private static func readSnapshot(executableURL: URL) throws -> UsageSnapshot {
+        let expectedAccountKey = try AccountIdentity.activeFingerprint()
         let process = Process()
         let input = Pipe()
         let output = Pipe()
@@ -58,10 +58,14 @@ public struct AppServerUsageProvider: UsageProvider {
         guard process.terminationStatus == 0 else {
             throw UsageProviderError.invalidData
         }
-        return try parseSnapshot(from: data)
+        let snapshot = try parseSnapshot(from: data, accountKey: expectedAccountKey)
+        guard try AccountIdentity.activeFingerprint() == expectedAccountKey else {
+            throw UsageProviderError.accountChanged
+        }
+        return snapshot
     }
 
-    private static func parseSnapshot(from data: Data) throws -> UsageSnapshot {
+    private static func parseSnapshot(from data: Data, accountKey: String) throws -> UsageSnapshot {
         var account: [String: Any]?
         var limits: [String: Any]?
 
@@ -78,15 +82,18 @@ public struct AppServerUsageProvider: UsageProvider {
 
         guard let account, let limits else { throw UsageProviderError.invalidData }
         let plan = account["planType"] as? String ?? "unknown"
-        let type = account["type"] as? String ?? "unknown"
-        let identityMaterial = (account["email"] as? String) ?? "\(type):\(plan)"
-        let accountKey = SHA256.hash(data: Data(identityMaterial.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
-            .prefix(12)
+
+        if let returnedAccountID = limits["accountId"] as? String,
+           AccountIdentity.fingerprint(returnedAccountID) != accountKey {
+            throw UsageProviderError.accountChanged
+        }
 
         let buckets = (limits["rateLimitsByLimitId"] as? [String: Any]) ?? [:]
-        guard let codex = buckets["codex"] as? [String: Any] else {
+        let namedCodex = buckets["codex"] as? [String: Any]
+        let identifiedCodex = buckets.values
+            .compactMap { $0 as? [String: Any] }
+            .first { ($0["limitId"] as? String) == "codex" }
+        guard let codex = namedCodex ?? identifiedCodex ?? (limits["rateLimits"] as? [String: Any]) else {
             throw UsageProviderError.invalidData
         }
 
@@ -108,7 +115,7 @@ public struct AppServerUsageProvider: UsageProvider {
             windows: windows.sorted { $0.resetAt < $1.resetAt },
             resetCredits: resetCredits,
             source: "app-server",
-            accountKey: String(accountKey)
+            accountKey: accountKey
         )
     }
 
