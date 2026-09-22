@@ -1,6 +1,8 @@
 import SwiftUI
 import WidgetKit
 import Foundation
+import Combine
+import CoreText
 import Darwin
 import CodexUsageCore
 
@@ -139,6 +141,7 @@ final class AccountChangeMonitor {
 final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
     let model = UsageViewModel()
     private var statusItem: NSStatusItem?
+    private var snapshotCancellable: AnyCancellable?
     private let popover = NSPopover()
     private let accountMonitor = AccountChangeMonitor()
 
@@ -146,17 +149,22 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
         ProcessInfo.processInfo.disableAutomaticTermination("Codex Usage background refresh")
         NSApplication.shared.setActivationPolicy(.accessory)
 
-        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let statusItem = NSStatusBar.system.statusItem(withLength: 30)
+        statusItem.autosaveName = "com.jino.codex-usage.remaining"
+        statusItem.isVisible = true
+        self.statusItem = statusItem
         if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "gauge.with.dots.needle.67percent",
-                accessibilityDescription: "Codex 사용량"
-            )
-            button.title = "Codex"
+            button.imagePosition = .imageOnly
+            updateStatusItem(for: model.snapshot)
             button.target = self
             button.action = #selector(togglePopover(_:))
         }
-        self.statusItem = statusItem
+
+        snapshotCancellable = model.$snapshot.sink { [weak self] snapshot in
+            Task { @MainActor in
+                self?.updateStatusItem(for: snapshot)
+            }
+        }
 
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 292, height: 220)
@@ -168,6 +176,60 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
         )
         model.startPolling()
         accountMonitor.start { [weak model = model] in model?.accountDidChange() }
+    }
+
+    private func updateStatusItem(for snapshot: UsageSnapshot) {
+        guard let button = statusItem?.button else { return }
+        let percentage = snapshot.windows.first.map { "\($0.remainingPercent)%" } ?? "…"
+        button.image = usageBadgeImage(text: percentage)
+        button.toolTip = snapshot.statusMessage ?? snapshot.windows.map { window in
+            "\(window.label): \(window.remainingPercent)% 남음 · \(remainingTime(until: window.resetAt)) 후 초기화"
+        }.joined(separator: "\n")
+        button.setAccessibilityLabel(button.toolTip)
+    }
+
+    private func usageBadgeImage(text: String) -> NSImage {
+        let size = NSSize(width: 27, height: 14)
+        let image = NSImage(size: size, flipped: false) { bounds in
+            NSColor.black.setStroke()
+            let outline = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
+            outline.lineWidth = 1
+            outline.stroke()
+
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .bold),
+                .foregroundColor: NSColor.black
+            ]
+            let label = NSAttributedString(string: text, attributes: attributes)
+            let line = CTLineCreateWithAttributedString(label)
+            var ascent: CGFloat = 0
+            var descent: CGFloat = 0
+            var leading: CGFloat = 0
+            let lineWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+            if let context = NSGraphicsContext.current?.cgContext {
+                context.textPosition = CGPoint(
+                    x: (bounds.width - lineWidth) / 2,
+                    y: bounds.midY - (ascent - descent) / 2
+                )
+                CTLineDraw(line, context)
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "Codex 남은 사용량 \(text)"
+        return image
+    }
+
+    private func remainingTime(until resetAt: Date) -> String {
+        let interval = max(resetAt.timeIntervalSinceNow, 0)
+        let totalMinutes = Int(interval / 60)
+        let days = totalMinutes / (24 * 60)
+        let hours = (totalMinutes % (24 * 60)) / 60
+        let minutes = totalMinutes % 60
+
+        if days > 0 { return "\(days)일 \(hours)시간" }
+        if hours > 0 { return "\(hours)시간 \(minutes)분" }
+        return "\(minutes)분"
     }
 
     @objc private func togglePopover(_ sender: Any?) {
