@@ -142,10 +142,15 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
     let model = UsageViewModel()
     private var statusItem: NSStatusItem?
     private var snapshotCancellable: AnyCancellable?
+    private var singletonLockDescriptor: CInt = -1
     private let popover = NSPopover()
     private let accountMonitor = AccountChangeMonitor()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard acquireSingletonLock() else {
+            NSApplication.shared.terminate(nil)
+            return
+        }
         ProcessInfo.processInfo.disableAutomaticTermination("Codex Usage background refresh")
         NSApplication.shared.setActivationPolicy(.accessory)
 
@@ -176,6 +181,25 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
         )
         model.startPolling()
         accountMonitor.start { [weak model = model] in model?.accountDidChange() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if singletonLockDescriptor >= 0 {
+            close(singletonLockDescriptor)
+            singletonLockDescriptor = -1
+        }
+    }
+
+    private func acquireSingletonLock() -> Bool {
+        let path = "/private/tmp/com.jino.codex-usage.\(getuid()).lock"
+        let descriptor = open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { return false }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            return false
+        }
+        singletonLockDescriptor = descriptor
+        return true
     }
 
     private func updateStatusItem(for snapshot: UsageSnapshot) {

@@ -42,7 +42,7 @@ App Server에 연결할 수 없으면 다른 계정이나 오래된 사용량을
 ## 빌드
 
 ```sh
-cd "/Users/jinoisfree/.codex/visualizations/2026/09/07/01a07ba6-7a03-71f1-a43b-5ab957ad7459/CodexUsageWidgetMVP"
+cd "/path/to/codex-usage-check"
 swift run CodexUsageCoreSmoke
 swift build
 zsh ./build-widget-app.sh
@@ -66,29 +66,37 @@ adhoc 서명 번들입니다. `build-widget-app.sh`가 `Contents/PlugIns` 아래
 메뉴 막대 앱과 위젯 번들을 빌드해 직접 시작하려면 다음을 실행합니다.
 
 ```sh
-cd "/Users/jinoisfree/.codex/visualizations/2026/09/07/01a07ba6-7a03-71f1-a43b-5ab957ad7459/CodexUsageWidgetMVP"
+cd "/path/to/codex-usage-check"
 zsh ./run-desktop-widget.sh
+```
+
+다른 Mac에 설치할 때는 저장소 루트에서 설치 스크립트를 실행합니다. 현재 사용자의 홈
+디렉터리에 설치하고 기존 프로세스를 정리하므로 메뉴 막대 사용량 표시가 중복되지 않습니다.
+
+```sh
+cd "/path/to/codex-usage-check"
+zsh ./install.sh
 ```
 
 ## 로그인 자동 실행
 
 현재 설치본은 사용자 계정 전용 LaunchAgent로 등록되어 있습니다.
 
-- 앱 경로: `/Users/jinoisfree/Applications/Codex Usage.app`
-- 설정 경로: `/Users/jinoisfree/Library/LaunchAgents/com.jino.codex-usage.desktop.plist`
+- 앱 경로: `~/Applications/Codex Usage.app`
+- 설정 경로: `~/Library/LaunchAgents/com.jino.codex-usage.desktop.plist`
 - 로그인 시 자동 시작: `RunAtLoad=true`
 - 예기치 않은 종료 시 재실행: `KeepAlive=true`
 
 자동 실행을 중지하려면 다음을 실행합니다.
 
 ```sh
-launchctl bootout gui/$(id -u) "/Users/jinoisfree/Library/LaunchAgents/com.jino.codex-usage.desktop.plist"
+launchctl bootout gui/$(id -u)/com.jino.codex-usage.desktop
 ```
 
 다시 등록하려면 다음을 실행합니다.
 
 ```sh
-launchctl bootstrap gui/$(id -u) "/Users/jinoisfree/Library/LaunchAgents/com.jino.codex-usage.desktop.plist"
+launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.jino.codex-usage.desktop.plist"
 launchctl kickstart -k gui/$(id -u)/com.jino.codex-usage.desktop
 ```
 

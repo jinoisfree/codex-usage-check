@@ -6,7 +6,9 @@
 	<string>com.jino.codex-usage.desktop</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/jinoisfree/Applications/Codex Usage.app/Contents/MacOS/CodexUsageMenuBar</string>
+		<string>/bin/zsh</string>
+		<string>-lc</string>
+		<string>exec "$HOME/Applications/Codex Usage.app/Contents/MacOS/CodexUsageMenuBar"</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

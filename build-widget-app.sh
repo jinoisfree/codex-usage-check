@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="${0:A:h}"
 BUILD_ROOT="/private/tmp/codex-usage-widget-build"
 SCRATCH_PATH="$BUILD_ROOT/swift-build"
-BUILD_OUTPUT="$SCRATCH_PATH/arm64-apple-macosx/release"
+BUILD_OUTPUT="$BUILD_ROOT/direct-output"
 APP_BUNDLE="$SCRIPT_DIR/AppBundle/Codex Usage.app"
 EXTENSION_BUNDLE="$APP_BUNDLE/Contents/PlugIns/CodexUsageWidgetExtension.appex"
 EXTENSION_CONTENTS="$EXTENSION_BUNDLE/Contents"
@@ -16,7 +16,13 @@ SWIFTPM_MODULECACHE_OVERRIDE="$BUILD_ROOT/swiftpm-cache" \
 swift build \
     -c release \
     --scratch-path "$SCRATCH_PATH" \
-    --package-path "$SCRIPT_DIR" || {
+    --package-path "$SCRIPT_DIR" && {
+        BUILD_OUTPUT="$(swift build \
+            -c release \
+            --show-bin-path \
+            --scratch-path "$SCRATCH_PATH" \
+            --package-path "$SCRIPT_DIR")"
+    } || {
         print "SwiftPM is unavailable; falling back to direct swiftc compilation."
         MODULE_CACHE="$BUILD_ROOT/direct-module-cache"
         mkdir -p "$BUILD_OUTPUT" "$MODULE_CACHE"
