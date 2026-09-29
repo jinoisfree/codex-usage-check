@@ -59,3 +59,24 @@ if ProcessInfo.processInfo.environment["CODEX_USAGE_LIVE_PROBE"] == "1" {
 }
 
 print("CodexUsageCore smoke: PASS")
+
+let expired = UsageSnapshot(plan: "Claude", updatedAt: .now, windows: [
+    UsageWindow(id: "old", label: "5시간 한도", usedPercent: 30,
+                resetAt: Date().addingTimeInterval(-1))
+], resetCredits: 0, source: "claude-statusline")
+check(expired.displaySnapshot().windows.isEmpty, "초기화 지난 값은 재사용하지 않습니다")
+check(expired.displaySnapshot().statusMessage != nil, "재확인 상태가 표시됩니다")
+let missing = UsageSnapshot.unavailable("미연동", service: .claude)
+check(missing.badgeText == "—", "미연동은 가짜 0%나 100%가 아닙니다")
+let ordered = UsageSnapshot(plan: "Plus", updatedAt: .now, windows: [
+    UsageWindow(id: "weekly", label: "주간 한도", usedPercent: 30, resetAt: .distantFuture),
+    UsageWindow(id: "five", label: "5시간 한도", usedPercent: 12, resetAt: .distantFuture)
+], resetCredits: 0, source: "app-server")
+check(ordered.representativeWindow?.id == "five", "메뉴바는 초기화 순서 대신 5시간 창을 우선합니다")
+print("Multi-service smoke: PASS")
+let historical = UsageSnapshot(plan: "Desktop", updatedAt: .now.addingTimeInterval(-61),
+    windows: ordered.windows, resetCredits: 0, source: "claude-desktop-history")
+check(historical.badgeText == "—", "오래된 Claude 기록을 현재 잔여량처럼 표시하지 않습니다")
+let weeklyOnly = UsageSnapshot(plan: "Plus", updatedAt: .now,
+    windows: [ordered.windows[0]], resetCredits: 0, source: "app-server")
+check(weeklyOnly.badgeText == "W70%", "5시간 한도가 없으면 주간 남은 양을 표시합니다")

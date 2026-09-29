@@ -5,7 +5,11 @@ SCRIPT_DIR="${0:A:h}"
 BUILD_ROOT="/private/tmp/codex-usage-widget-build"
 SCRATCH_PATH="$BUILD_ROOT/swift-build"
 BUILD_OUTPUT="$BUILD_ROOT/direct-output"
-APP_BUNDLE="$SCRIPT_DIR/AppBundle/Codex Usage.app"
+APP_TEMPLATE="$SCRIPT_DIR/AppBundle/Codex Usage.app"
+APP_BUNDLE="$BUILD_ROOT/Codex Usage.app"
+mkdir -p "$BUILD_ROOT"
+# Sign outside cloud-synced Documents: file providers can re-add FinderInfo during signing.
+/usr/bin/ditto --norsrc "$APP_TEMPLATE" "$APP_BUNDLE"
 EXTENSION_BUNDLE="$APP_BUNDLE/Contents/PlugIns/CodexUsageWidgetExtension.appex"
 EXTENSION_CONTENTS="$EXTENSION_BUNDLE/Contents"
 HOST_ENTITLEMENTS="$SCRIPT_DIR/AppBundle/CodexUsage.entitlements"
@@ -47,6 +51,7 @@ swift build \
             "$SCRIPT_DIR/Sources/CodexUsageCore/AppServerUsageProvider.swift" \
             "$SCRIPT_DIR/Sources/CodexUsageCore/UsageProvider.swift" \
             "$SCRIPT_DIR/Sources/CodexUsageCore/UsageSnapshot.swift" \
+            "$SCRIPT_DIR/Sources/CodexUsageCore/ServiceUsage.swift" \
             -emit-module-path "$BUILD_OUTPUT/CodexUsageCore.swiftmodule" \
             -o "$BUILD_OUTPUT/libCodexUsageCore.a"
 
@@ -67,7 +72,13 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$EXTENSION_CONTENTS/MacOS"
 cp "$BUILD_OUTPUT/CodexUsageMenuBar" "$APP_BUNDLE/Contents/MacOS/CodexUsageMenuBar"
 cp "$BUILD_OUTPUT/CodexUsageWidgetExtension" "$EXTENSION_CONTENTS/MacOS/CodexUsageWidgetExtension"
 cp "$SCRIPT_DIR/WidgetExtension/Info.plist" "$EXTENSION_CONTENTS/Info.plist"
+mkdir -p "$APP_BUNDLE/Contents/Resources"
+cp "$SCRIPT_DIR/Scripts/claude_bridge.py" "$APP_BUNDLE/Contents/Resources/claude_bridge.py"
+cp "$SCRIPT_DIR/Scripts/claude_desktop.py" "$APP_BUNDLE/Contents/Resources/claude_desktop.py"
 
+# File-provider metadata on generated bundles is not accepted by codesign.
+xattr -dr com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
+xattr -dr com.apple.ResourceFork "$APP_BUNDLE" 2>/dev/null || true
 codesign --force --sign - --entitlements "$WIDGET_ENTITLEMENTS" "$EXTENSION_BUNDLE"
 codesign --force --sign - --entitlements "$HOST_ENTITLEMENTS" "$APP_BUNDLE"
 codesign --verify --deep "$APP_BUNDLE"

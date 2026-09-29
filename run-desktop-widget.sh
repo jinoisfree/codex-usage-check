@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
-APP_EXECUTABLE="$SCRIPT_DIR/AppBundle/Codex Usage.app/Contents/MacOS/CodexUsageMenuBar"
+APP_EXECUTABLE="/private/tmp/codex-usage-widget-build/Codex Usage.app/Contents/MacOS/CodexUsageMenuBar"
 LOG_PATH="/private/tmp/codex-usage-widget.log"
 
 zsh "$SCRIPT_DIR/build-widget-app.sh"

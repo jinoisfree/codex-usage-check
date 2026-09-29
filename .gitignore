@@ -1,5 +1,8 @@
 .build/
+__pycache__/
+AppBundle/Codex Usage.app/Contents/Resources/claude_bridge.py
 .DS_Store
 AppBundle/Codex Usage.app/Contents/MacOS/*
 AppBundle/Codex Usage.app/Contents/PlugIns/*
 AppBundle/Codex Usage.app/Contents/_CodeSignature/
+AppBundle/Codex Usage.app/Contents/Resources/claude_desktop.py

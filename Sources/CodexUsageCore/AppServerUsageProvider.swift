@@ -112,7 +112,7 @@ public struct AppServerUsageProvider: UsageProvider {
         return UsageSnapshot(
             plan: plan,
             updatedAt: .now,
-            windows: windows.sorted { $0.resetAt < $1.resetAt },
+            windows: windows.sorted { ($0.resetAt ?? .distantFuture) < ($1.resetAt ?? .distantFuture) },
             resetCredits: resetCredits,
             source: "app-server",
             accountKey: accountKey

@@ -8,8 +8,14 @@ import CodexUsageCore
 
 @MainActor
 final class UsageViewModel: ObservableObject {
-    @Published var snapshot = UsageSnapshot.sample
+    @Published var snapshot = UsageSnapshot.unavailable("계정 확인 중", service: .codex)
+    @Published var claudeSnapshot = UsageSnapshot.unavailable("Claude 연결 확인 중", service: .claude)
+    @Published var menuMode = UserDefaults.standard.string(forKey: "usageMenuMode") ?? "both" {
+        didSet { UserDefaults.standard.set(menuMode, forKey: "usageMenuMode") }
+    }
     @Published var showingUsed = false
+    @Published var connectionMessage: String?
+    private var claudePollingTask: Task<Void, Never>?
 
     private var pollingTask: Task<Void, Never>?
     private var refreshTask: Task<UsageSnapshot?, Never>?
@@ -20,6 +26,12 @@ final class UsageViewModel: ObservableObject {
     func startPolling() {
         guard pollingTask == nil else { return }
         accountDidChange()
+        claudePollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshClaude()
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(300))
@@ -30,7 +42,7 @@ final class UsageViewModel: ObservableObject {
 
     func accountDidChange() {
         let nextAccountKey = try? AccountIdentity.activeFingerprint()
-        guard nextAccountKey != observedAccountKey || snapshot.source == "sample" else { return }
+        guard nextAccountKey != observedAccountKey || snapshot.source == "codex-unavailable" else { return }
 
         observedAccountKey = nextAccountKey
         refreshGeneration += 1
@@ -91,16 +103,46 @@ final class UsageViewModel: ObservableObject {
     }
 
     private func apply(_ next: UsageSnapshot) {
-        let widgetURL = UsageCache.widgetSandboxSnapshotURL()
+        snapshot = next
         do {
             try UsageCache.write(next)
-            let data = try Data(contentsOf: widgetURL)
-            _ = try UsageSnapshotCodec.iso8601.decode(UsageSnapshot.self, from: data)
         } catch {
+            // A WidgetKit cache failure must not freeze the menu bar.
+        }
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    func refreshClaude() async {
+        guard let script = Bundle.main.url(forResource: "claude_bridge", withExtension: "py") else {
+            claudeSnapshot = .unavailable("Claude 수집기 설치 필요", service: .claude)
             return
         }
-        snapshot = next
-        WidgetCenter.shared.reloadTimelines(ofKind: "CodexUsageWidget")
+        let next = await ClaudeUsageProvider(scriptURL: script).loadSnapshot()
+        let changed = next != claudeSnapshot
+        claudeSnapshot = next
+        if changed {
+            try? ServiceUsageCache.writeClaude(next)
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
+    func connectClaude() async {
+        guard let script = Bundle.main.url(forResource: "claude_bridge", withExtension: "py") else { return }
+        connectionMessage = await Task.detached {
+            let process = Process()
+            let pipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            process.arguments = [script.path, "connect"]
+            process.standardOutput = pipe
+            process.standardError = pipe
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                return String(decoding: data, as: UTF8.self)
+            } catch { return "연결 실행 실패. Python 3 설치를 확인하세요." }
+        }.value
+        await refreshClaude()
     }
 }
 
@@ -154,7 +196,7 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
         ProcessInfo.processInfo.disableAutomaticTermination("Codex Usage background refresh")
         NSApplication.shared.setActivationPolicy(.accessory)
 
-        let statusItem = NSStatusBar.system.statusItem(withLength: 30)
+        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.autosaveName = "com.jino.codex-usage.remaining"
         statusItem.isVisible = true
         self.statusItem = statusItem
@@ -165,17 +207,19 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
             button.action = #selector(togglePopover(_:))
         }
 
-        snapshotCancellable = model.$snapshot.sink { [weak self] snapshot in
+        snapshotCancellable = Publishers.CombineLatest3(
+            model.$snapshot, model.$claudeSnapshot, model.$menuMode
+        ).sink { [weak self] snapshot, claude, mode in
             Task { @MainActor in
-                self?.updateStatusItem(for: snapshot)
+                self?.updateStatusItem(for: snapshot, claude: claude, mode: mode)
             }
         }
 
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 292, height: 220)
+        popover.contentSize = NSSize(width: 332, height: 440)
         popover.contentViewController = NSHostingController(
-            rootView: UsagePopover(model: model)
-                .frame(width: 276)
+            rootView: UnifiedUsagePopover(model: model)
+                .frame(width: 316)
                 .padding(8)
                 .task { await self.model.refresh() }
         )
@@ -192,7 +236,7 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
 
     private func acquireSingletonLock() -> Bool {
         let path = "/private/tmp/com.jino.codex-usage.\(getuid()).lock"
-        let descriptor = open(path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else { return false }
         guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
             close(descriptor)
@@ -202,34 +246,44 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    private func updateStatusItem(for snapshot: UsageSnapshot) {
+    private func updateStatusItem(for snapshot: UsageSnapshot,
+                                  claude: UsageSnapshot? = nil, mode: String = "both") {
         guard let button = statusItem?.button else { return }
-        let percentage = snapshot.windows.first.map { "\($0.remainingPercent)%" } ?? "…"
-        button.image = usageBadgeImage(text: percentage)
-        button.toolTip = snapshot.statusMessage ?? snapshot.windows.map { window in
-            "\(window.label): \(window.remainingPercent)% 남음 · \(remainingTime(until: window.resetAt)) 후 초기화"
-        }.joined(separator: "\n")
+        let codex = snapshot.displaySnapshot()
+        let claude = (claude ?? model.claudeSnapshot).displaySnapshot()
+        let selected = mode == "claude" ? claude : codex
+        let singleText = selected.badgeText.hasPrefix("W")
+            ? String(selected.badgeText.dropFirst()) : selected.badgeText
+        let text = mode == "both" ? "CX \(codex.badgeText) · CL \(claude.badgeText)" : singleText
+        button.image = usageBadgeImage(text: text, combined: mode == "both")
+        button.toolTip = [(UsageService.codex, codex), (.claude, claude)].map { service, value in
+            let detail = value.statusMessage ?? value.windows.map { window in
+                let reset = window.resetAt.map { "\(remainingTime(until: $0)) 후 초기화" } ?? "초기화 시각 미제공"
+                return "\(window.label): \(window.remainingPercent)% 남음 · \(reset)"
+            }.joined(separator: "\n")
+            return "\(service.title)\n\(detail)\n마지막 확인: \(value.updatedAt.formatted())"
+        }.joined(separator: "\n\n") + "\n* 10분 이상 지난 관측값 · W 주간 한도"
         button.setAccessibilityLabel(button.toolTip)
     }
 
-    private func usageBadgeImage(text: String) -> NSImage {
-        let size = NSSize(width: 27, height: 14)
+    private func usageBadgeImage(text: String, combined: Bool = false) -> NSImage {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .bold),
+            .foregroundColor: NSColor.black
+        ]
+        let label = NSAttributedString(string: text, attributes: attributes)
+        let line = CTLineCreateWithAttributedString(label)
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        let lineWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+        let size = NSSize(width: max(27, ceil(lineWidth) + (combined ? 6 : 4)), height: 14)
         let image = NSImage(size: size, flipped: false) { bounds in
             NSColor.black.setStroke()
             let outline = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
             outline.lineWidth = 1
             outline.stroke()
 
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .bold),
-                .foregroundColor: NSColor.black
-            ]
-            let label = NSAttributedString(string: text, attributes: attributes)
-            let line = CTLineCreateWithAttributedString(label)
-            var ascent: CGFloat = 0
-            var descent: CGFloat = 0
-            var leading: CGFloat = 0
-            let lineWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
             if let context = NSGraphicsContext.current?.cgContext {
                 context.textPosition = CGPoint(
                     x: (bounds.width - lineWidth) / 2,
@@ -240,7 +294,7 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "Codex 남은 사용량 \(text)"
+        image.accessibilityDescription = "AI 남은 사용량 \(text)"
         return image
     }
 
@@ -273,6 +327,79 @@ struct CodexUsageMenuBarApp: App {
     var body: some Scene {
         Settings {
             EmptyView()
+        }
+    }
+}
+
+private struct UnifiedUsagePopover: View {
+    @ObservedObject var model: UsageViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("AI 남은 사용량").font(.headline)
+            Picker("메뉴바", selection: $model.menuMode) {
+                Text("모두").tag("both")
+                Text("Codex").tag("codex")
+                Text("Claude").tag("claude")
+            }.pickerStyle(.segmented)
+            serviceCard("Codex", snapshot: model.snapshot.displaySnapshot(), color: .green)
+            Divider()
+            serviceCard("Claude", snapshot: model.claudeSnapshot.displaySnapshot(), color: .orange)
+            HStack {
+                Button("Claude 열기") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Claude.app"))
+                }
+                Spacer()
+                Button("새로고침") {
+                    Task { await model.refresh() }
+                    Task { await model.refreshClaude() }
+                }
+            }
+            Text(model.connectionMessage ?? (model.claudeSnapshot.source == "claude-desktop-direct"
+                ? "Claude 서버 직접 조회 · 2분 간격 · 5시간 한도 우선"
+                : "Claude 데스크톱의 마지막 관측값입니다. 초기화 시각은 미제공입니다."))
+                .font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(3)
+        }
+        .padding(8)
+    }
+
+    private func serviceCard(_ title: String, snapshot: UsageSnapshot, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title).font(.headline)
+                Spacer()
+                Text(snapshot.plan).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if let message = snapshot.statusMessage {
+                Text(message).foregroundStyle(.secondary).font(.caption)
+                    .frame(minHeight: 62)
+            } else {
+                ForEach(snapshot.windows) { window in
+                    VStack(spacing: 3) {
+                        HStack {
+                            Text(window.label)
+                            Spacer()
+                            Text("\(window.remainingPercent)% 남음").bold()
+                        }.font(.caption)
+                        ProgressView(value: Double(window.remainingPercent), total: 100).tint(color)
+                        HStack {
+                            Spacer()
+                            if let resetAt = window.resetAt {
+                                Text("초기화까지")
+                                Text(resetAt, style: .relative)
+                            } else {
+                                Text("초기화 시각 미제공")
+                            }
+                        }.font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            HStack {
+                Text("마지막 확인")
+                Text(snapshot.updatedAt, style: .time)
+                if Date().timeIntervalSince(snapshot.updatedAt) > 600 { Text("· 오래된 값") }
+            }.font(.caption2).foregroundStyle(.secondary)
         }
     }
 }
@@ -375,7 +502,7 @@ private struct UsageMeter: View {
                     .font(.subheadline.weight(.bold).monospacedDigit())
                     .minimumScaleFactor(0.72)
                     .lineLimit(1)
-                Text(window.resetAt, style: .relative)
+                Text(window.resetAt.map { $0.formatted() } ?? "초기화 시각 미제공")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .minimumScaleFactor(0.72)

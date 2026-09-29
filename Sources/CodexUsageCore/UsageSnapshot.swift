@@ -4,9 +4,9 @@ public struct UsageWindow: Codable, Equatable, Sendable, Identifiable {
     public let id: String
     public let label: String
     public let usedPercent: Int
-    public let resetAt: Date
+    public let resetAt: Date?
 
-    public init(id: String, label: String, usedPercent: Int, resetAt: Date) {
+    public init(id: String, label: String, usedPercent: Int, resetAt: Date?) {
         self.id = id
         self.label = label
         self.usedPercent = min(max(usedPercent, 0), 100)
