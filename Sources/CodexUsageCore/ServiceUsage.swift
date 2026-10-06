@@ -15,35 +15,48 @@ public extension UsageSnapshot {
     func displaySnapshot(now: Date = .now) -> UsageSnapshot {
         guard statusMessage == nil else { return self }
         let active = windows.filter { $0.resetAt.map { $0 > now } ?? true }
-        if source == "claude-desktop-direct", now.timeIntervalSince(updatedAt) > 300 {
+        if (source == "claude-desktop-direct" || source == "app-server"),
+           now.timeIntervalSince(updatedAt) > 3600 {
             return UsageSnapshot(plan: plan, updatedAt: updatedAt, windows: [],
                                  resetCredits: resetCredits, source: source, accountKey: accountKey,
-                                 statusMessage: "Claude 서버 재조회 필요")
+                                 statusMessage: source == "app-server" ? "Codex 서버 재조회 필요" : "Claude 서버 재조회 필요",
+                                 detail: detail)
         }
         if source == "claude-desktop-history", now.timeIntervalSince(updatedAt) > 1800 {
             return UsageSnapshot(plan: plan, updatedAt: updatedAt, windows: [],
                                  resetCredits: resetCredits, source: source, accountKey: accountKey,
-                                 statusMessage: "Claude 사용량 재확인 필요 (30분 경과)")
+                                 statusMessage: "Claude 사용량 재확인 필요 (30분 경과)", detail: detail)
         }
         return UsageSnapshot(plan: plan, updatedAt: updatedAt, windows: active,
                              resetCredits: resetCredits, source: source, accountKey: accountKey,
-                             statusMessage: active.isEmpty ? "초기화 후 재확인 대기" : nil)
+                             statusMessage: active.isEmpty ? "초기화 후 재확인 대기" : nil, detail: detail)
     }
 
     var representativeWindow: UsageWindow? {
-        windows.first { $0.label.contains("5시간") }
-            ?? windows.first { $0.label.contains("주간") }
+        let short = windows.first { $0.label.contains("5시간") }
+        let weekly = windows.first { $0.label.contains("주간") }
+        if let short, let weekly {
+            return weekly.usedPercent > short.usedPercent ? weekly : short
+        }
+        return short ?? weekly
     }
 
     var badgeText: String {
         guard statusMessage == nil, let window = representativeWindow else { return "—" }
         // A historical desktop sample is not a live remaining quota.
-        if source == "claude-desktop-history", Date().timeIntervalSince(updatedAt) > 60 {
+        if source == "claude-desktop-history", Date().timeIntervalSince(updatedAt) > 1800 {
             return "—"
         }
         let prefix = window.label.contains("주간") ? "W" : ""
         let stale = Date().timeIntervalSince(updatedAt) > 600 ? "*" : ""
         return "\(prefix)\(window.remainingPercent)%\(stale)"
+    }
+
+    /// Query details belong to the popover; only usage changes refresh widgets.
+    func hasSameWidgetContent(as other: UsageSnapshot) -> Bool {
+        plan == other.plan && updatedAt == other.updatedAt && windows == other.windows &&
+            resetCredits == other.resetCredits && source == other.source &&
+            accountKey == other.accountKey && statusMessage == other.statusMessage
     }
 }
 

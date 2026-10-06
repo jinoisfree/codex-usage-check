@@ -24,6 +24,7 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
     public let source: String
     public let accountKey: String?
     public let statusMessage: String?
+    public let detail: String?
 
     public init(
         plan: String,
@@ -32,7 +33,8 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         resetCredits: Int,
         source: String,
         accountKey: String? = nil,
-        statusMessage: String? = nil
+        statusMessage: String? = nil,
+        detail: String? = nil
     ) {
         self.plan = plan
         self.updatedAt = updatedAt
@@ -41,6 +43,7 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
         self.source = source
         self.accountKey = accountKey
         self.statusMessage = statusMessage
+        self.detail = detail
     }
 
     public static let sample: UsageSnapshot = {

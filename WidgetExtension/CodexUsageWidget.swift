@@ -152,7 +152,7 @@ struct CodexUsageWidget: Widget {
             CompactCombinedUsageView(entry: entry)
         }
         .configurationDisplayName("Codex · Claude 사용량")
-        .description("5시간 우선, 없으면 주간 남은 양을 표시합니다.")
+        .description("5시간·주간 중 덜 남은 한도를 표시합니다. 같으면 5시간입니다.")
         .supportedFamilies([.systemSmall])
     }
 }

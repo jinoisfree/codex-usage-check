@@ -15,36 +15,122 @@ import sqlite3
 import sys
 import tempfile
 import time
-import urllib.error
+
+
+DIRECT_FAILURE_LABELS = dict(login_missing="로그인 정보 없음", token_missing="로그인 만료",
+                            authentication="인증 거부", limited="요청 제한",
+                            network="시간 초과·연결 실패", format="응답 형식 다름")
+
+
+def direct_status(at, result, showing_previous):
+    if result == "keychain_unavailable":
+        return "키체인 접근 거부 · 다시 켜면 재시도"
+    if at is None or result is None:
+        return "조회 대기 중"
+    clock = dt.datetime.fromtimestamp(at).strftime("%H:%M")
+    prefix = "마지막 조회 " + clock
+    if result == "success":
+        return prefix + " 성공"
+    reason = DIRECT_FAILURE_LABELS.get(result, "응답 형식 다름")
+    if result.startswith("http_") and result[5:].isdigit():
+        reason = "HTTP " + result[5:]
+    if result in ("login_missing", "token_missing", "authentication"):
+        return clock + " " + reason + " · Claude Code 탭 확인"
+    return prefix + " 실패: " + reason + (" · 이전 값 표시" if showing_previous else "")
+
+
+def retained_direct_snapshot(snapshot, identity, now):
+    if not isinstance(snapshot, dict) or snapshot.get("accountKey") != identity:
+        return None
+    try:
+        observed = dt.datetime.fromisoformat(snapshot["updatedAt"].replace("Z", "+00:00")).timestamp()
+        if not 0 <= now - observed <= 3600:
+            return None
+        windows = [w for w in snapshot["windows"] if isinstance(w, dict) and
+                   dt.datetime.fromisoformat(w["resetAt"].replace("Z", "+00:00")).timestamp() > now]
+    except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
+        return None
+    if not windows:
+        return None
+    result = dict(snapshot, windows=windows)
+    result.pop("statusMessage", None)
+    return result
+
+
+def desktop_history_snapshot(args, directory, context, now):
+    identity, since = context if context else (None, None)
+    path = args.data_dir / "claude-desktop-binding.json"
+    binding = read_json(path, {})
+    if binding.get("version") != 1:
+        binding = {}
+    binding, snapshot = desktop_snapshot(
+        read_json(directory / "plan-usage-history.json", {}),
+        binding, identity, now, verified_since=since)
+    if desktop_identity(directory) != context:
+        binding, snapshot = {}, empty_snapshot("Claude 계정 변경 확인 중")
+    atomic_json(path, binding)
+    return snapshot
 
 
 def direct_desktop_snapshot(args, directory, context):
-    from claude_desktop import fetch
+    from claude_desktop import fetch, failure_code
     identity = context[0] if context else None
-    if not identity:
-        return empty_snapshot("Claude 데스크톱 로그인 확인 필요")
     path = args.data_dir / "claude-direct-state.json"
-    state = read_json(path, {})
+    previous = read_json(path, {})
     now = time.time()
-    if state.get("identity") == identity and now < state.get("nextAttempt", 0):
-        snapshot = state.get("snapshot", empty_snapshot("Claude 조회 대기", identity))
-    else:
-        delay = 120
+    # A keychain refusal stays blocked until the option is explicitly enabled again.
+    blocked = previous.get("blocked") is True
+    state = dict(identity=identity, nextAttempt=0, lastSuccess=None, lastAttemptAt=None,
+                 lastResult=None, limitedCount=0, blocked=blocked)
+    if previous.get("identity") == identity:
+        for key in state:
+            if key in previous:
+                state[key] = previous[key]
+    if blocked:
+        state["lastSuccess"] = None
+        state["lastResult"] = "keychain_unavailable"
+    elif not identity:
+        if now >= state["nextAttempt"]:
+            config = read_json(directory / "config.json", {})
+            has_login = (isinstance(config, dict) and config.get("lastKnownAccountUuid") and
+                         config.get("oauth:tokenCacheV2"))
+            state.update(lastSuccess=None, lastAttemptAt=now,
+                         lastResult="token_missing" if has_login else "login_missing",
+                         nextAttempt=now + 120, limitedCount=0)
+    elif now >= state["nextAttempt"]:
+        state["lastAttemptAt"] = now
         try:
             snapshot = fetch(directory, identity, now)
-        except urllib.error.HTTPError as error:
-            delay = 300 if error.code == 429 else 120
-            message = "Claude 요청 제한 · 5분 후 재시도" if error.code == 429 else "Claude 인증 또는 서버 응답 확인 필요"
-            snapshot = empty_snapshot(message, identity)
-        except Exception:
-            # Never expose credential data through exception messages.
-            snapshot = empty_snapshot("Claude 직접 조회 실패 · Code 탭 로그인 확인", identity)
-        if desktop_identity(directory) != context:
-            return empty_snapshot("Claude 계정 변경 확인 중")
-        atomic_json(path, dict(identity=identity, nextAttempt=now + delay, snapshot=snapshot))
+            state.update(lastSuccess=snapshot, lastResult="success", limitedCount=0,
+                         nextAttempt=now + 120)
+        except Exception as error:
+            # Persist a classification code only, never the exception or response body.
+            code = failure_code(error)
+            state["lastResult"] = code
+            if code == "keychain_unavailable":
+                state.update(blocked=True, lastSuccess=None, limitedCount=0,
+                             nextAttempt=now + 120)
+            elif code == "limited":
+                count = min(state["limitedCount"] + 1, 3)
+                state.update(limitedCount=count, nextAttempt=now + (300, 600, 1200)[count - 1])
+            else:
+                state.update(limitedCount=0, nextAttempt=now + 120)
+    if desktop_identity(directory) != context:
+        atomic_json(path, dict(identity=None, nextAttempt=0, lastSuccess=None,
+                               lastAttemptAt=None, lastResult=None, limitedCount=0,
+                               blocked=state["blocked"]))
+        return empty_snapshot("Claude 계정 변경 확인 중")
+    atomic_json(path, state)
+    # Keep the history binding current even when direct usage is available.
+    history = desktop_history_snapshot(args, directory, context, now)
     if desktop_identity(directory) != context:
         return empty_snapshot("Claude 계정 변경 확인 중")
-    return snapshot
+    snapshot = None if state["blocked"] else retained_direct_snapshot(state["lastSuccess"], identity, now)
+    showing_previous = snapshot is not None and state["lastResult"] != "success"
+    detail = direct_status(state["lastAttemptAt"], state["lastResult"], showing_previous)
+    if snapshot is None:
+        snapshot = history if history.get("windows") else empty_snapshot(detail, identity)
+    return dict(snapshot, detail=detail)
 
 
 def timestamp():
@@ -298,21 +384,11 @@ def read_desktop(args):
     args.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (args.data_dir / "claude-desktop.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        path = args.data_dir / "claude-desktop-binding.json"
         context = desktop_identity(directory)
         if read_json(args.data_dir / "claude-direct-consent.json", {}).get("enabled") is True:
             print(json.dumps(direct_desktop_snapshot(args, directory, context), ensure_ascii=False))
             return
-        identity, since = context if context else (None, None)
-        binding = read_json(path, {})
-        if binding.get("version") != 1:
-            binding = {}
-        binding, snapshot = desktop_snapshot(
-            read_json(directory / "plan-usage-history.json", {}),
-            binding, identity, time.time(), verified_since=since)
-        if desktop_identity(directory) != context:
-            binding, snapshot = {}, empty_snapshot("Claude 계정 변경 확인 중")
-        atomic_json(path, binding)
+        snapshot = desktop_history_snapshot(args, directory, context, time.time())
     print(json.dumps(snapshot, ensure_ascii=False))
 
 
@@ -326,8 +402,12 @@ def main():
                                         "enable-desktop-direct", "disable-desktop-direct"])
     args = parser.parse_args()
     if args.mode in ("enable-desktop-direct", "disable-desktop-direct"):
-        atomic_json(args.data_dir / "claude-direct-consent.json",
-                    dict(enabled=args.mode == "enable-desktop-direct"))
+        args.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with (args.data_dir / "claude-desktop.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            atomic_json(args.data_dir / "claude-direct-state.json", {})
+            atomic_json(args.data_dir / "claude-direct-consent.json",
+                        dict(enabled=args.mode == "enable-desktop-direct"))
         print("Claude 직접 조회 설정 저장 완료")
         return
     if args.mode == "connect":
@@ -337,7 +417,8 @@ def main():
         disconnect(args)
         return
     config = read_json(args.data_dir / "bridge-config.json", {})
-    if args.mode == "read" and not config:
+    direct_enabled = read_json(args.data_dir / "claude-direct-consent.json", {}).get("enabled") is True
+    if args.mode == "read" and (direct_enabled or not config):
         read_desktop(args)
         return
     raw = sys.stdin.buffer.read(1024 * 1024) if args.mode in ("session", "status") else b"{}"

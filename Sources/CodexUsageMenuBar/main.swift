@@ -15,7 +15,18 @@ final class UsageViewModel: ObservableObject {
     }
     @Published var showingUsed = false
     @Published var connectionMessage: String?
+    @Published var claudeDirectEnabled = readClaudeDirectConsent()
+    @Published var changingClaudeDirect = false
     private var claudePollingTask: Task<Void, Never>?
+    private var claudeRefreshGeneration = 0
+
+    private static func readClaudeDirectConsent() -> Bool {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+              let data = try? Data(contentsOf: base.appendingPathComponent("com.jino.codex-usage/claude-direct-consent.json")),
+              let consent = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return consent["enabled"] as? Bool == true
+    }
 
     private var pollingTask: Task<Void, Never>?
     private var refreshTask: Task<UsageSnapshot?, Never>?
@@ -89,6 +100,7 @@ final class UsageViewModel: ObservableObject {
             return
         }
 
+        apply(snapshot.displaySnapshot())
         scheduleRetry()
     }
 
@@ -103,7 +115,9 @@ final class UsageViewModel: ObservableObject {
     }
 
     private func apply(_ next: UsageSnapshot) {
+        let changed = !next.hasSameWidgetContent(as: snapshot)
         snapshot = next
+        guard changed else { return }
         do {
             try UsageCache.write(next)
         } catch {
@@ -117,8 +131,10 @@ final class UsageViewModel: ObservableObject {
             claudeSnapshot = .unavailable("Claude 수집기 설치 필요", service: .claude)
             return
         }
+        let generation = claudeRefreshGeneration
         let next = await ClaudeUsageProvider(scriptURL: script).loadSnapshot()
-        let changed = next != claudeSnapshot
+        guard generation == claudeRefreshGeneration else { return }
+        let changed = !next.hasSameWidgetContent(as: claudeSnapshot)
         claudeSnapshot = next
         if changed {
             try? ServiceUsageCache.writeClaude(next)
@@ -127,22 +143,40 @@ final class UsageViewModel: ObservableObject {
     }
 
     func connectClaude() async {
-        guard let script = Bundle.main.url(forResource: "claude_bridge", withExtension: "py") else { return }
-        connectionMessage = await Task.detached {
+        let result = await runClaudeCommand("connect")
+        connectionMessage = result.message
+        await refreshClaude()
+    }
+
+    func setClaudeDirect(_ enabled: Bool) async {
+        guard !changingClaudeDirect else { return }
+        changingClaudeDirect = true
+        claudeRefreshGeneration += 1
+        let result = await runClaudeCommand(enabled ? "enable-desktop-direct" : "disable-desktop-direct")
+        claudeDirectEnabled = Self.readClaudeDirectConsent()
+        connectionMessage = result.succeeded ? nil : result.message
+        await refreshClaude()
+        changingClaudeDirect = false
+    }
+
+    private func runClaudeCommand(_ mode: String) async -> (message: String, succeeded: Bool) {
+        guard let script = Bundle.main.url(forResource: "claude_bridge", withExtension: "py") else {
+            return ("Claude 수집기 설치 필요", false)
+        }
+        return await Task.detached {
             let process = Process()
             let pipe = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            process.arguments = [script.path, "connect"]
+            process.arguments = [script.path, mode]
             process.standardOutput = pipe
             process.standardError = pipe
             do {
                 try process.run()
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                return String(decoding: data, as: UTF8.self)
-            } catch { return "연결 실행 실패. Python 3 설치를 확인하세요." }
+                return (String(decoding: data, as: UTF8.self), process.terminationStatus == 0)
+            } catch { return ("연결 실행 실패. Python 3 설치를 확인하세요.", false) }
         }.value
-        await refreshClaude()
     }
 }
 
@@ -216,7 +250,7 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 332, height: 440)
+        popover.contentSize = NSSize(width: 332, height: 474)
         popover.contentViewController = NSHostingController(
             rootView: UnifiedUsagePopover(model: model)
                 .frame(width: 316)
@@ -252,8 +286,7 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
         let codex = snapshot.displaySnapshot()
         let claude = (claude ?? model.claudeSnapshot).displaySnapshot()
         let selected = mode == "claude" ? claude : codex
-        let singleText = selected.badgeText.hasPrefix("W")
-            ? String(selected.badgeText.dropFirst()) : selected.badgeText
+        let singleText = selected.badgeText
         let text = mode == "both" ? "CX \(codex.badgeText) · CL \(claude.badgeText)" : singleText
         button.image = usageBadgeImage(text: text, combined: mode == "both")
         button.toolTip = [(UsageService.codex, codex), (.claude, claude)].map { service, value in
@@ -261,8 +294,9 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
                 let reset = window.resetAt.map { "\(remainingTime(until: $0)) 후 초기화" } ?? "초기화 시각 미제공"
                 return "\(window.label): \(window.remainingPercent)% 남음 · \(reset)"
             }.joined(separator: "\n")
-            return "\(service.title)\n\(detail)\n마지막 확인: \(value.updatedAt.formatted())"
-        }.joined(separator: "\n\n") + "\n* 10분 이상 지난 관측값 · W 주간 한도"
+            let query = value.detail.map { "\n" + $0 } ?? ""
+            return "\(service.title)\n\(detail)\n마지막 확인: \(value.updatedAt.formatted())\(query)"
+        }.joined(separator: "\n\n") + "\n덜 남은 한도 표시 · * 10분 이상 지난 관측값 · W 주간 한도"
         button.setAccessibilityLabel(button.toolTip)
     }
 
@@ -345,6 +379,12 @@ private struct UnifiedUsagePopover: View {
             serviceCard("Codex", snapshot: model.snapshot.displaySnapshot(), color: .green)
             Divider()
             serviceCard("Claude", snapshot: model.claudeSnapshot.displaySnapshot(), color: .orange)
+            Toggle("Claude 직접 조회", isOn: Binding(
+                get: { model.claudeDirectEnabled },
+                set: { enabled in Task { await model.setClaudeDirect(enabled) } }
+            ))
+                .font(.caption)
+                .disabled(model.changingClaudeDirect)
             HStack {
                 Button("Claude 열기") {
                     NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Claude.app"))
@@ -355,8 +395,8 @@ private struct UnifiedUsagePopover: View {
                     Task { await model.refreshClaude() }
                 }
             }
-            Text(model.connectionMessage ?? (model.claudeSnapshot.source == "claude-desktop-direct"
-                ? "Claude 서버 직접 조회 · 2분 간격 · 5시간 한도 우선"
+            Text(model.claudeSnapshot.detail ?? model.connectionMessage ?? (model.claudeSnapshot.source == "claude-desktop-direct"
+                ? "Claude 서버 직접 조회 · 2분 간격 · 덜 남은 한도 표시"
                 : "Claude 데스크톱의 마지막 관측값입니다. 초기화 시각은 미제공입니다."))
                 .font(.caption2).foregroundStyle(.secondary)
                 .lineLimit(3)

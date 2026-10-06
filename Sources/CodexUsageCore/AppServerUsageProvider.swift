@@ -1,4 +1,6 @@
 import Foundation
+import CoreFoundation
+import Darwin
 
 /// Reads the active Codex account and rate-limit buckets through the local
 /// `codex app-server` JSONL protocol. It never persists or displays an email
@@ -20,6 +22,7 @@ public struct AppServerUsageProvider: UsageProvider {
     private static func defaultExecutableURL() -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let candidates = [
+            URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"),
             URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"),
             home.appendingPathComponent(".local/bin/codex"),
             URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
@@ -40,32 +43,69 @@ public struct AppServerUsageProvider: UsageProvider {
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         try process.run()
-
-        let requests = [
-            "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"codex_usage_widget\",\"title\":\"Codex Usage Widget\",\"version\":\"0.2.0\"}}}",
-            "{\"method\":\"initialized\",\"params\":{}}",
-            "{\"method\":\"account/read\",\"id\":1,\"params\":{\"refreshToken\":false}}",
-            "{\"method\":\"account/rateLimits/read\",\"id\":2}"
-        ].joined(separator: "\n") + "\n"
-        input.fileHandleForWriting.write(Data(requests.utf8))
-        // app-server performs account/rate-limit reads asynchronously. Keep
-        // stdin open briefly so the responses are flushed before shutdown.
-        Thread.sleep(forTimeInterval: 5.0)
-        input.fileHandleForWriting.closeFile()
-
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw UsageProviderError.invalidData
+        try? input.fileHandleForReading.close()
+        try? output.fileHandleForWriting.close()
+        defer {
+            try? input.fileHandleForWriting.close()
+            if process.isRunning { process.terminate() }
+            let deadline = ProcessInfo.processInfo.systemUptime + 0.3
+            while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+            try? output.fileHandleForReading.close()
         }
-        let snapshot = try parseSnapshot(from: data, accountKey: expectedAccountKey)
-        guard try AccountIdentity.activeFingerprint() == expectedAccountKey else {
-            throw UsageProviderError.accountChanged
+
+        func send(_ message: String) throws {
+            try input.fileHandleForWriting.write(contentsOf: Data((message + "\n").utf8))
         }
-        return snapshot
+        try send(#"{"method":"initialize","id":0,"params":{"clientInfo":{"name":"codex_usage_widget","title":"Codex Usage Widget","version":"0.4.0"}}}"#)
+        var buffer = Data(), responses = Data()
+        var initialized = false
+        var received = Set<Int>()
+        var totalBytes = 0
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        let fd = output.fileHandleForReading.fileDescriptor
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            guard poll(&descriptor, 1, 100) > 0 else { continue }
+            var bytes = [UInt8](repeating: 0, count: 8192)
+            let count = read(fd, &bytes, bytes.count)
+            guard count > 0 else { throw UsageProviderError.invalidData }
+            totalBytes += count
+            guard totalBytes <= 1_048_576 else { throw UsageProviderError.invalidData }
+            buffer.append(contentsOf: bytes.prefix(count))
+            while let end = buffer.firstIndex(of: 10) {
+                let line = Data(buffer[..<end])
+                buffer.removeSubrange(...end)
+                guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                      let id = object["id"] as? Int else { continue }
+                if id == 0 && !initialized {
+                    guard object["error"] == nil else { throw UsageProviderError.invalidData }
+                    try send(#"{"method":"initialized","params":{}}"#)
+                    try send(#"{"method":"account/read","id":1,"params":{"refreshToken":false}}"#)
+                    try send(#"{"method":"account/rateLimits/read","id":2}"#)
+                    initialized = true
+                } else if initialized && (id == 1 || id == 2) {
+                    guard object["error"] == nil else { throw UsageProviderError.invalidData }
+                    responses.append(line)
+                    responses.append(10)
+                    received.insert(id)
+                    if received.count == 2 {
+                        let snapshot = try parseSnapshot(from: responses, accountKey: expectedAccountKey)
+                        guard try AccountIdentity.activeFingerprint() == expectedAccountKey else {
+                            throw UsageProviderError.accountChanged
+                        }
+                        return snapshot
+                    }
+                }
+            }
+        }
+        throw UsageProviderError.invalidData
     }
 
-    private static func parseSnapshot(from data: Data, accountKey: String) throws -> UsageSnapshot {
+    public static func parseSnapshot(from data: Data, accountKey: String) throws -> UsageSnapshot {
         var account: [String: Any]?
         var limits: [String: Any]?
 
@@ -120,7 +160,9 @@ public struct AppServerUsageProvider: UsageProvider {
     }
 
     private static func makeWindow(from raw: [String: Any], fallbackID: String) -> UsageWindow? {
-        guard let used = (raw["usedPercent"] as? NSNumber)?.intValue,
+        guard let number = raw["usedPercent"] as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite, (0...100).contains(number.doubleValue),
               let duration = (raw["windowDurationMins"] as? NSNumber)?.intValue,
               let reset = (raw["resetsAt"] as? NSNumber)?.doubleValue else {
             return nil
@@ -134,7 +176,7 @@ public struct AppServerUsageProvider: UsageProvider {
         return UsageWindow(
             id: fallbackID,
             label: label,
-            usedPercent: used,
+            usedPercent: Int(ceil(number.doubleValue)),
             resetAt: Date(timeIntervalSince1970: reset)
         )
     }
