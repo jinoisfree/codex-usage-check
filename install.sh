@@ -10,32 +10,32 @@ DOMAIN="gui/$(id -u)"
 LABEL="com.jino.codex-usage.desktop"
 
 zsh "$SCRIPT_DIR/build-widget-app.sh"
-mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents"
-launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-pkill -x CodexUsageMenuBar 2>/dev/null || true
-# Stop the installed extension before changing its bundle/version. A suspended old
-# process can otherwise archive a timeline with a mismatched bundle version.
-EXTENSION_EXECUTABLE="$APP_DESTINATION/Contents/PlugIns/CodexUsageWidgetExtension.appex/Contents/MacOS/CodexUsageWidgetExtension"
-for extension_pid in ${(f)$(pgrep -x CodexUsageWidgetExtension 2>/dev/null || true)}; do
-    extension_command="$(ps -p "$extension_pid" -o command=)"
-    if [[ "$extension_command" == "$EXTENSION_EXECUTABLE"* ]]; then
-        kill -TERM "$extension_pid" 2>/dev/null || true
-        for attempt in {1..30}; do
-            kill -0 "$extension_pid" 2>/dev/null || break
-            sleep 0.1
-        done
-        if kill -0 "$extension_pid" 2>/dev/null; then
-            print -u2 "Widget extension has not stopped; installation cancelled."
-            exit 1
+install_result=0
+if /usr/bin/python3 "$SCRIPT_DIR/Scripts/install_app.py" --source "$APP_SOURCE" --destination "$APP_DESTINATION"; then
+    :
+else
+    install_result=$?
+    # Code 4 leaves a valid new app in place; finish registration before reporting it.
+    if (( install_result != 4 )); then
+        # Code 3 means the helper unloaded the agent before the installation failed.
+        if (( install_result == 3 )) && [[ -f "$AGENT_DESTINATION" && -x "$APP_DESTINATION/Contents/MacOS/CodexUsageMenuBar" ]]; then
+            print -u2 "설치 실패 전의 로그인 자동 실행을 복원합니다."
+            launchctl bootstrap "$DOMAIN" "$AGENT_DESTINATION" || true
+            launchctl kickstart -k "$DOMAIN/$LABEL" || true
         fi
+        exit "$install_result"
     fi
-done
-/usr/bin/ditto "$APP_SOURCE" "$APP_DESTINATION"
+fi
+mkdir -p "$HOME/Library/LaunchAgents"
 /usr/bin/ditto "$AGENT_SOURCE" "$AGENT_DESTINATION"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DESTINATION"
 /usr/bin/pluginkit -a "$APP_DESTINATION/Contents/PlugIns/CodexUsageWidgetExtension.appex"
 launchctl bootstrap "$DOMAIN" "$AGENT_DESTINATION"
 launchctl kickstart -k "$DOMAIN/$LABEL"
 
-print "Installed: $APP_DESTINATION"
-print "LaunchAgent: $AGENT_DESTINATION"
+if (( install_result == 4 )); then
+    print -u2 "새 앱 등록과 자동 실행은 마쳤지만 이전 사본 정리가 끝나지 않았습니다. 삭제 실패 경로와 권한을 확인하세요."
+    exit "$install_result"
+fi
+print "설치 및 자동 실행 등록 완료: $APP_DESTINATION"
+print "로그인 자동 실행: $AGENT_DESTINATION"

@@ -60,7 +60,7 @@ public struct AppServerUsageProvider: UsageProvider {
         func send(_ message: String) throws {
             try input.fileHandleForWriting.write(contentsOf: Data((message + "\n").utf8))
         }
-        try send(#"{"method":"initialize","id":0,"params":{"clientInfo":{"name":"codex_usage_widget","title":"Codex Usage Widget","version":"0.4.0"}}}"#)
+        try send(#"{"method":"initialize","id":0,"params":{"clientInfo":{"name":"codex_usage_widget","title":"Codex Usage Widget","version":"0.4.1"}}}"#)
         var buffer = Data(), responses = Data()
         var initialized = false
         var received = Set<Int>()

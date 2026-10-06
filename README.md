@@ -1,6 +1,6 @@
 # Codex Usage Widget MVP
 
-## Codex + Claude (0.4.0)
+## Codex + Claude (0.4.1)
 
 하나의 앱이 메뉴바에 `CX 72% · CL 48%`처럼 두 서비스의 **남은 비율**을 표시합니다.
 클릭한 뒤 모두/Codex/Claude를 선택하면 메뉴바 표시를 전환할 수 있습니다.
@@ -152,6 +152,8 @@ CODEX_USAGE_LIVE_PROBE=1 swift run CodexUsageCoreSmoke
 메뉴 막대·WidgetKit 앱은 `/private/tmp/codex-usage-widget-build/Codex Usage.app`으로 묶이며, 현재는 로컬 개발용
 adhoc 서명 번들입니다. `build-widget-app.sh`가 `Contents/PlugIns` 아래에
 샌드박스 및 App Group 권한이 포함된 `CodexUsageWidgetExtension.appex`를 넣습니다.
+빌드만 하면 이 경로에 사본이 남습니다. `install.sh`는 설치를 마친 뒤 이 빌드 사본을
+등록 해제하고 삭제하며, 같은 폴더의 Swift 빌드 캐시는 유지합니다.
 
 앱을 한 번 실행한 뒤 macOS 위젯 갤러리에서 `Codex 사용량`을 추가하고 바탕화면의
 달력 위젯과 같은 작은 정사각형 슬롯에 배치합니다. 위치와 크기는 macOS가 관리하므로
@@ -165,13 +167,36 @@ cd "/path/to/codex-usage-check"
 zsh ./run-desktop-widget.sh
 ```
 
-다른 Mac에 설치할 때는 저장소 루트에서 설치 스크립트를 실행합니다. 현재 사용자의 홈
-디렉터리에 설치하고 기존 프로세스를 정리하므로 메뉴 막대 사용량 표시가 중복되지 않습니다.
+설치와 버전 올리기는 저장소 루트에서 같은 명령으로 실행합니다. 최신 소스를 받은 뒤
+아래 스크립트를 실행하면 `~/Applications/Codex Usage.app`에 설치합니다.
 
 ```sh
 cd "/path/to/codex-usage-check"
 zsh ./install.sh
 ```
+
+설치 도우미는 빌드 사본의 번들 ID·실행 파일·서명을 확인하고 설치 폴더 옆에 새 사본을
+완전히 복사한 뒤 다시 검증합니다. 그 뒤 로그인 자동 실행을 내리고, 설치·삭제 대상
+경로에서 실행 중인 앱과 위젯만 종료합니다. 설치 폴더 전체를 교체하므로 이전 버전에만
+있던 파일이 남지 않습니다. 개발용 `run-desktop-widget.sh`의 직접 실행 동작은 그대로입니다.
+
+새 사본이 설치된 뒤 `~/Applications`와 `/Applications`에서 `Codex Usage.app` 또는
+`Codex Usage.app.bak-`로 시작하는 사본을 찾아 위젯·앱 등록을 해제하고 삭제합니다.
+번들 ID가 `com.jino.codex-usage`이고 실행 파일 이름이 `CodexUsageMenuBar`인 실제 폴더만
+삭제하며, 이름이 같아도 다른 제품이거나 심볼릭 링크이면 경로를 안내하고 보존합니다.
+설치 경로에 다른 항목이 있으면 교체하지 않고 중단합니다.
+
+복사·서명 검증·프로세스 종료에 실패하면 기존 설치본과 이전 사본을 유지합니다.
+교체 실패 시 기존 설치본을 되돌리고, 복구에도 실패하면 이전 사본이 남은 경로를 안내합니다.
+자동 실행을 이미 내린 뒤 실패했으며 설치본이 남아 있으면 기존 LaunchAgent를 다시 올립니다.
+이전 사본의 등록 해제는 미등록 상태 등으로 실패해도 삭제를 계속합니다.
+설치 후 이전 사본의 삭제만 실패하면 다른 사본의 정리를 계속하고 실패 경로와 이유를
+표시합니다. 새 앱 등록과 로그인 자동 실행까지 마친 뒤 정리가 끝나지 않았다는 안내와
+오류 코드로 종료합니다. 새 설치본은 유지되며, 권한 문제를 해결한 뒤 설치 명령을
+다시 실행할 수 있습니다.
+
+사용량 캐시·직접 조회 승인 등 `~/Library/Application Support/com.jino.codex-usage`의 데이터,
+위젯 컨테이너와 `~/.claude` 설정은 삭제하거나 수정하지 않습니다.
 
 ## 로그인 자동 실행
 
