@@ -5,7 +5,7 @@ SCRIPT_DIR="${0:A:h}"
 BUILD_ROOT="/private/tmp/codex-usage-widget-build"
 SCRATCH_PATH="$BUILD_ROOT/swift-build"
 BUILD_OUTPUT="$BUILD_ROOT/direct-output"
-APP_TEMPLATE="$SCRIPT_DIR/AppBundle/Codex Usage.app"
+APP_TEMPLATE="$SCRIPT_DIR/AppBundle/Template"
 APP_BUNDLE="$BUILD_ROOT/Codex Usage.app"
 mkdir -p "$BUILD_ROOT"
 # Sign outside cloud-synced Documents: file providers can re-add FinderInfo during signing.

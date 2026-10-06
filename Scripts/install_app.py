@@ -152,6 +152,30 @@ def verify(app, system):
         raise RuntimeError(f"실행 가능한 앱 파일이 없습니다: {executable}")
 
 
+def cleanup_legacy_template(repository, system=None):
+    repository = Path(repository).expanduser().absolute()
+    legacy = repository / "AppBundle" / NAME
+    if legacy.is_symlink() or legacy.parent.is_symlink() or not legacy.is_dir():
+        return False
+    try:
+        tracked = subprocess.run(["git", "-C", str(repository), "ls-files", "-z", "--",
+                                  "AppBundle/" + NAME + "/"], capture_output=True)
+        if tracked.returncode != 0 or tracked.stdout:
+            return False
+        system = system if system is not None else SystemCommands()
+        if system.enabled:
+            try:
+                subprocess.run([LSREGISTER, "-u", str(legacy)], capture_output=True)
+            except OSError:
+                pass
+        shutil.rmtree(legacy)
+        print(f"옛 빌드 틀 삭제: {legacy}")
+        return True
+    except OSError as error:
+        print(f"옛 빌드 틀을 정리하지 못해 보존합니다: {legacy} ({error})", file=sys.stderr)
+        return False
+
+
 def install(source, destination, folders, system=None, cleanup_source=True):
     system = system if system is not None else SystemCommands()
     source, destination = normalized(source), normalized(destination)
@@ -225,8 +249,13 @@ def main():
                         help="이전 사본을 찾을 폴더 (반복 지정 가능)")
     parser.add_argument("--no-system", action="store_true", help="테스트용: 서명·프로세스·등록 명령을 실행하지 않음")
     parser.add_argument("--keep-source", action="store_true", help="테스트용: 빌드 폴더의 원본 사본을 보존")
+    parser.add_argument("--cleanup-template", type=Path,
+                        help="저장소에 남은 미추적 옛 빌드 틀만 정리하고 종료")
     args = parser.parse_args()
     system = SystemCommands(enabled=not args.no_system)
+    if args.cleanup_template is not None:
+        cleanup_legacy_template(args.cleanup_template, system=system)
+        return 0
     folders = args.search_folder if args.search_folder is not None else [Path.home() / "Applications", Path("/Applications")]
     try:
         install(args.source, args.destination, folders, system=system, cleanup_source=not args.keep_source)

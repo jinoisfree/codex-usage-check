@@ -1,6 +1,6 @@
 # Codex Usage Widget MVP
 
-## Codex + Claude (0.4.1)
+## Codex + Claude (0.4.2)
 
 하나의 앱이 메뉴바에 `CX 72% · CL 48%`처럼 두 서비스의 **남은 비율**을 표시합니다.
 클릭한 뒤 모두/Codex/Claude를 선택하면 메뉴바 표시를 전환할 수 있습니다.
@@ -149,6 +149,7 @@ zsh ./build-widget-app.sh
 CODEX_USAGE_LIVE_PROBE=1 swift run CodexUsageCoreSmoke
 ```
 
+저장소에는 앱 번들이 들어 있지 않으며, 빌드용 틀은 `AppBundle/Template`에 있습니다.
 메뉴 막대·WidgetKit 앱은 `/private/tmp/codex-usage-widget-build/Codex Usage.app`으로 묶이며, 현재는 로컬 개발용
 adhoc 서명 번들입니다. `build-widget-app.sh`가 `Contents/PlugIns` 아래에
 샌드박스 및 App Group 권한이 포함된 `CodexUsageWidgetExtension.appex`를 넣습니다.
@@ -174,6 +175,10 @@ zsh ./run-desktop-widget.sh
 cd "/path/to/codex-usage-check"
 zsh ./install.sh
 ```
+
+`install.sh`는 예전 저장소에 남은 `AppBundle/Codex Usage.app`도 정리합니다.
+Git으로 확인해 추적 파일이 없고 심볼릭 링크가 아닌 폴더만 등록 해제 후 삭제하며,
+Git 확인이나 삭제에 실패하면 폴더를 보존하고 설치를 계속합니다.
 
 설치 도우미는 빌드 사본의 번들 ID·실행 파일·서명을 확인하고 설치 폴더 옆에 새 사본을
 완전히 복사한 뒤 다시 검증합니다. 그 뒤 로그인 자동 실행을 내리고, 설치·삭제 대상

@@ -26,6 +26,7 @@ else
         exit "$install_result"
     fi
 fi
+/usr/bin/python3 "$SCRIPT_DIR/Scripts/install_app.py" --cleanup-template "$SCRIPT_DIR" || true
 mkdir -p "$HOME/Library/LaunchAgents"
 /usr/bin/ditto "$AGENT_SOURCE" "$AGENT_DESTINATION"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DESTINATION"

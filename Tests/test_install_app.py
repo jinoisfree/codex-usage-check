@@ -451,11 +451,109 @@ class SystemCommandTests(unittest.TestCase):
                     self.assertFalse(call.kwargs.get("check", False))
 
 
+class LegacyTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repository = self.root / "repository"
+        self.repository.mkdir()
+        subprocess.run(["git", "init", "--quiet", str(self.repository)], check=True, capture_output=True)
+        self.legacy = self.repository / "AppBundle" / installer.NAME
+        self.legacy.mkdir(parents=True)
+        self.remnant = self.legacy / "old-binary"
+        self.remnant.write_text("old template artifact")
+        self.system = installer.SystemCommands(enabled=False)
+
+    def cleanup(self):
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            result = installer.cleanup_legacy_template(self.repository, system=self.system)
+        return result, output.getvalue(), errors.getvalue()
+
+    def test_untracked_template_is_removed_and_new_template_is_preserved(self):
+        template = self.repository / "AppBundle/Template/Contents"
+        template.mkdir(parents=True)
+        (template / "Info.plist").write_text("new template")
+        result, output, _ = self.cleanup()
+        self.assertTrue(result)
+        self.assertFalse(self.legacy.exists())
+        self.assertEqual((template / "Info.plist").read_text(), "new template")
+        self.assertEqual(output.splitlines(), [f"옛 빌드 틀 삭제: {self.legacy}"])
+
+    def test_tracked_template_is_preserved(self):
+        subprocess.run(["git", "-C", str(self.repository), "add", "--", str(self.remnant)],
+                       check=True, capture_output=True)
+        result, output, _ = self.cleanup()
+        self.assertFalse(result)
+        self.assertEqual(self.remnant.read_text(), "old template artifact")
+        self.assertEqual(output, "")
+
+    def test_symlink_is_preserved_without_git_or_registration_commands(self):
+        self.legacy.rename(self.root / "outside")
+        self.legacy.symlink_to(self.root / "outside", target_is_directory=True)
+        with patch.object(installer.subprocess, "run") as run:
+            result, _, _ = self.cleanup()
+        self.assertFalse(result)
+        self.assertTrue(self.legacy.is_symlink())
+        self.assertEqual(self.remnant.read_text(), "old template artifact")
+        run.assert_not_called()
+
+    def test_non_repository_is_preserved(self):
+        (self.repository / ".git").rename(self.root / "saved-git")
+        result, _, _ = self.cleanup()
+        self.assertFalse(result)
+        self.assertEqual(self.remnant.read_text(), "old template artifact")
+
+    def test_git_unavailable_is_preserved(self):
+        with patch.object(installer.subprocess, "run", side_effect=FileNotFoundError("git unavailable")):
+            result, _, errors = self.cleanup()
+        self.assertFalse(result)
+        self.assertEqual(self.remnant.read_text(), "old template artifact")
+        self.assertIn("보존합니다", errors)
+
+    def test_delete_failure_is_reported_without_raising(self):
+        with patch.object(installer.shutil, "rmtree", side_effect=PermissionError("read-only")):
+            result, _, errors = self.cleanup()
+        self.assertFalse(result)
+        self.assertEqual(self.remnant.read_text(), "old template artifact")
+        self.assertIn("보존합니다", errors)
+
+    def test_registration_failure_does_not_block_deletion(self):
+        real_run = subprocess.run
+        for failure in (False, True):
+            with self.subTest(command_unavailable=failure):
+                self.legacy.mkdir(exist_ok=True)
+                self.remnant.write_text("old template artifact")
+
+                def run(command, **options):
+                    if command[0] != installer.LSREGISTER:
+                        return real_run(command, **options)
+                    self.assertEqual(command, [installer.LSREGISTER, "-u", str(self.legacy)])
+                    self.assertEqual(options, dict(capture_output=True))
+                    if failure:
+                        raise FileNotFoundError("lsregister unavailable")
+                    return subprocess.CompletedProcess(command, 1, b"not registered", b"scan failed")
+
+                with patch.object(installer.subprocess, "run", side_effect=run), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertTrue(installer.cleanup_legacy_template(self.repository))
+                self.assertFalse(self.legacy.exists())
+
+    def test_cleanup_cli_never_installs_and_returns_zero_on_delete_failure(self):
+        with patch.object(sys, "argv", ["install_app.py", "--cleanup-template", str(self.repository), "--no-system"]), \
+             patch.object(installer.shutil, "rmtree", side_effect=PermissionError("read-only")), \
+             patch.object(installer, "install") as install, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(installer.main(), 0)
+        install.assert_not_called()
+        self.assertTrue(self.remnant.exists())
+
+
 class InstallShellTests(unittest.TestCase):
     def test_exit_code_branches_under_set_e_with_temporary_command_standins(self):
         original = (Path(__file__).parents[1] / "install.sh").read_text()
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             for result_code in (0, 4, 3, 1):
                 with self.subTest(code=result_code):
                     case = root / str(result_code)
@@ -468,7 +566,9 @@ class InstallShellTests(unittest.TestCase):
                         content = ("#!/bin/zsh\n"
                                    f"print -r -- '{name} '" + '"$*" >> "$INSTALL_TEST_LOG"\n')
                         if name == "python3":
-                            content += 'exit "$INSTALL_TEST_RESULT"\n'
+                            content += ('if [[ "$2" == "--cleanup-template" ]]; then\n'
+                                        '    exit 1\n'
+                                        'fi\nexit "$INSTALL_TEST_RESULT"\n')
                         elif name == "ditto":
                             content += '/bin/cp "$1" "$2"\n'
                         path.write_text(content)
@@ -508,12 +608,13 @@ class InstallShellTests(unittest.TestCase):
                     self.assertEqual(calls[0], "build")
                     if result_code in (0, 4):
                         self.assertEqual([line.split()[0] for line in calls],
-                                         ["build", "python3", "ditto", "lsregister", "pluginkit", "launchctl", "launchctl"])
+                                         ["build", "python3", "python3", "ditto", "lsregister", "pluginkit", "launchctl", "launchctl"])
                         self.assertEqual(agent_destination.read_text(), "new plist")
-                        self.assertTrue(calls[3].startswith("lsregister -f "))
-                        self.assertTrue(calls[4].startswith("pluginkit -a "))
-                        self.assertTrue(calls[5].startswith("launchctl bootstrap "))
-                        self.assertTrue(calls[6].startswith("launchctl kickstart -k "))
+                        self.assertIn("--cleanup-template " + str(case), calls[2])
+                        self.assertTrue(calls[4].startswith("lsregister -f "))
+                        self.assertTrue(calls[5].startswith("pluginkit -a "))
+                        self.assertTrue(calls[6].startswith("launchctl bootstrap "))
+                        self.assertTrue(calls[7].startswith("launchctl kickstart -k "))
                     elif result_code == 3:
                         self.assertEqual([line.split()[0] for line in calls], ["build", "python3", "launchctl", "launchctl"])
                         self.assertEqual(agent_destination.read_text(), "old plist")
