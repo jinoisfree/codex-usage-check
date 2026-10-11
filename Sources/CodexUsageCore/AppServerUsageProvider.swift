@@ -3,8 +3,8 @@ import CoreFoundation
 import Darwin
 
 /// Reads the active Codex account and rate-limit buckets through the local
-/// `codex app-server` JSONL protocol. It never persists or displays an email
-/// address or access token.
+/// `codex app-server` JSONL protocol. It never persists an email or access token. Account labels remain in memory
+/// and are displayed only when the user enables account display.
 public struct AppServerUsageProvider: UsageProvider {
     public let executableURL: URL
 
@@ -13,6 +13,10 @@ public struct AppServerUsageProvider: UsageProvider {
     }
 
     public func loadSnapshot() async throws -> UsageSnapshot {
+        try await loadSnapshotWithAccount().snapshot
+    }
+
+    public func loadSnapshotWithAccount() async throws -> (snapshot: UsageSnapshot, account: String?) {
         let executableURL = executableURL
         return try await Task.detached(priority: .utility) {
             try Self.readSnapshot(executableURL: executableURL)
@@ -32,7 +36,7 @@ public struct AppServerUsageProvider: UsageProvider {
             ?? candidates[0]
     }
 
-    private static func readSnapshot(executableURL: URL) throws -> UsageSnapshot {
+    private static func readSnapshot(executableURL: URL) throws -> (snapshot: UsageSnapshot, account: String?) {
         let expectedAccountKey = try AccountIdentity.activeFingerprint()
         let process = Process()
         let input = Pipe()
@@ -60,7 +64,7 @@ public struct AppServerUsageProvider: UsageProvider {
         func send(_ message: String) throws {
             try input.fileHandleForWriting.write(contentsOf: Data((message + "\n").utf8))
         }
-        try send(#"{"method":"initialize","id":0,"params":{"clientInfo":{"name":"codex_usage_widget","title":"Codex Usage Widget","version":"0.4.2"}}}"#)
+        try send(#"{"method":"initialize","id":0,"params":{"clientInfo":{"name":"codex_usage_widget","title":"Codex Usage Widget","version":"0.4.3"}}}"#)
         var buffer = Data(), responses = Data()
         var initialized = false
         var received = Set<Int>()
@@ -97,12 +101,26 @@ public struct AppServerUsageProvider: UsageProvider {
                         guard try AccountIdentity.activeFingerprint() == expectedAccountKey else {
                             throw UsageProviderError.accountChanged
                         }
-                        return snapshot
+                        return (snapshot, accountLabel(from: responses))
                     }
                 }
             }
         }
         throw UsageProviderError.invalidData
+    }
+
+    public static func accountLabel(from data: Data) -> String? {
+        for line in String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline) {
+            guard let json = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  json["id"] as? Int == 1, json["error"] == nil,
+                  let account = (json["result"] as? [String: Any])?["account"] as? [String: Any]
+            else { continue }
+            if let email = account["email"] as? String,
+               !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return email }
+            let type = (account["type"] as? String)?.lowercased().replacingOccurrences(of: "_", with: "")
+            return type == "apikey" ? "API 키" : nil
+        }
+        return nil
     }
 
     public static func parseSnapshot(from data: Data, accountKey: String) throws -> UsageSnapshot {

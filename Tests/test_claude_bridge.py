@@ -162,5 +162,77 @@ class ClaudeBridgeTests(unittest.TestCase):
         self.assertEqual(snapshot["windows"], [])
 
 
+class AccountLabelTests(unittest.TestCase):
+    def test_desktop_matching_mismatching_and_missing_uuid(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            desktop, config = home / "desktop", home / "cli"
+            desktop.mkdir()
+            config.mkdir()
+            uuid = "12345678-account"
+            bridge.atomic_json(desktop / "config.json", dict(lastKnownAccountUuid=uuid))
+            bridge.atomic_json(home / ".claude.json", dict(oauthAccount=dict(
+                accountUuid=uuid, emailAddress="home@example.test")))
+            self.assertEqual(bridge.desktop_account_label(desktop, config, home), "home@example.test")
+            bridge.atomic_json(config / ".claude.json", dict(oauthAccount=dict(
+                accountUuid=uuid, emailAddress="config@example.test")))
+            self.assertEqual(bridge.desktop_account_label(desktop, config, home), "config@example.test")
+            bridge.atomic_json(desktop / "config.json", dict(lastKnownAccountUuid="87654321-other"))
+            label = bridge.desktop_account_label(desktop, config, home)
+            self.assertIn("87654321", label)
+            self.assertNotIn("@", label)
+            bridge.atomic_json(desktop / "config.json", {})
+            self.assertIsNone(bridge.desktop_account_label(desktop, config, home))
+
+    def test_cli_login_and_config_directory(self):
+        config = dict(executable="/mock/claude", configDirectory="/mock/config")
+        for logged_in in (True, False):
+            with patch.object(bridge.subprocess, "run", return_value=types.SimpleNamespace(
+                    returncode=0, stdout=json.dumps(dict(loggedIn=logged_in, email="cli@example.test")))) as run:
+                self.assertEqual(bridge.cli_account_label(config), "cli@example.test" if logged_in else None)
+                self.assertEqual(run.call_args.args[0], ["/mock/claude", "auth", "status"])
+                self.assertEqual(run.call_args.kwargs["env"]["CLAUDE_CONFIG_DIR"], "/mock/config")
+                self.assertEqual(run.call_args.kwargs["timeout"], 3)
+
+    def test_account_process_never_writes_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home, data = root / "home", root / "data"
+            desktop = home / "Library/Application Support/Claude"
+            desktop.mkdir(parents=True)
+            bridge.atomic_json(desktop / "config.json", dict(lastKnownAccountUuid="account"))
+            bridge.atomic_json(home / ".claude.json", dict(oauthAccount=dict(
+                accountUuid="account", emailAddress="desktop@example.test")))
+            command = [sys.executable, bridge.__file__, "--data-dir", str(data),
+                       "--config-dir", str(home / ".claude"), "account"]
+            env = dict(bridge.os.environ, HOME=str(home))
+            def run():
+                result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=8)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(len(result.stdout.splitlines()), 1)
+                return json.loads(result.stdout)["label"]
+            self.assertEqual(run(), "desktop@example.test")
+            self.assertFalse(data.exists())
+            cli = root / "claude"
+            cli.write_text("#!/bin/sh\nprintf '%s' '{\"loggedIn\":true,\"email\":\"cli@example.test\"}'\n")
+            cli.chmod(0o700)
+            bridge.atomic_json(data / "bridge-config.json", dict(
+                executable=str(cli), configDirectory=str(home)))
+            before = {p.name: p.read_bytes() for p in data.iterdir()}
+            self.assertEqual(run(), "cli@example.test")
+            self.assertEqual({p.name: p.read_bytes() for p in data.iterdir()}, before)
+            bridge.atomic_json(data / "claude-direct-consent.json", dict(enabled=True))
+            self.assertEqual(run(), "desktop@example.test")
+            for path in data.iterdir():
+                self.assertNotIn(b"@example.test", path.read_bytes())
+
+    def test_account_failure_returns_null_without_details(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args = types.SimpleNamespace(data_dir=Path(temp), config_dir=temp)
+            bridge.atomic_json(args.data_dir / "bridge-config.json", dict(executable="missing"))
+            self.assertIsNone(bridge.read_account_label(args))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -392,15 +392,58 @@ def read_desktop(args):
     print(json.dumps(snapshot, ensure_ascii=False))
 
 
+def desktop_account_label(directory, config_directory, home):
+    config = read_json(directory / "config.json", {})
+    account = config.get("lastKnownAccountUuid")
+    if not isinstance(account, str) or not account:
+        return None
+    for path in (config_directory / ".claude.json", home / ".claude.json"):
+        raw = read_json(path, {})
+        oauth = raw.get("oauthAccount", {}) if isinstance(raw, dict) else {}
+        if isinstance(oauth, dict) and oauth.get("accountUuid") == account:
+            email = oauth.get("emailAddress")
+            if isinstance(email, str) and email.strip():
+                return email
+    return "이메일 확인 불가 · " + account[:8]
+
+
+def cli_account_label(config):
+    result = subprocess.run([config["executable"], "auth", "status"], capture_output=True,
+                            text=True, timeout=3,
+                            env=dict(os.environ, CLAUDE_CONFIG_DIR=config["configDirectory"]))
+    raw = json.loads(result.stdout)
+    if result.returncode or not isinstance(raw, dict) or raw.get("loggedIn") is not True:
+        return None
+    email = raw.get("email")
+    return email if isinstance(email, str) and email.strip() else None
+
+
+def read_account_label(args):
+    try:
+        config = read_json(args.data_dir / "bridge-config.json", {})
+        direct = read_json(args.data_dir / "claude-direct-consent.json", {}).get("enabled") is True
+        if direct or not config:
+            home = Path.home()
+            return desktop_account_label(home / "Library/Application Support/Claude",
+                                         Path(args.config_dir).expanduser(), home)
+        return cli_account_label(config)
+    except Exception:
+        # Auth output and exception details must never reach logs or persistent state.
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=Path, default=Path.home() /
                         "Library/Application Support/com.jino.codex-usage")
     parser.add_argument("--config-dir", default=os.environ.get("CLAUDE_CONFIG_DIR",
                                                              str(Path.home()/".claude")))
-    parser.add_argument("mode", choices=["connect", "disconnect", "session", "status", "read",
+    parser.add_argument("mode", choices=["connect", "disconnect", "session", "status", "read", "account",
                                         "enable-desktop-direct", "disable-desktop-direct"])
     args = parser.parse_args()
+    if args.mode == "account":
+        print(json.dumps({"label": read_account_label(args)}, ensure_ascii=False))
+        return
     if args.mode in ("enable-desktop-direct", "disable-desktop-direct"):
         args.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (args.data_dir / "claude-desktop.lock").open("a") as lock:

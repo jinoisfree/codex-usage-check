@@ -123,7 +123,7 @@ for source in ["claude-desktop-direct", "app-server"] {
 }
 print("Multi-service smoke: PASS")
 
-func codexResponse(used: Any, accountID: String = "account-a", namedBucket: Bool = true) throws -> Data {
+func codexResponse(used: Any, accountID: String = "account-a", namedBucket: Bool = true, email: String? = nil, type: String = "chatgpt") throws -> Data {
     let bucket: [String: Any] = [
         "primary": ["usedPercent": used, "windowDurationMins": 300, "resetsAt": 1_900_000_000],
         "secondary": ["usedPercent": 13, "windowDurationMins": 10080, "resetsAt": 1_900_086_400]
@@ -131,7 +131,9 @@ func codexResponse(used: Any, accountID: String = "account-a", namedBucket: Bool
     var limits: [String: Any] = ["accountId": accountID, "rateLimitResetCredits": ["availableCount": 2]]
     if namedBucket { limits["rateLimitsByLimitId"] = ["codex": bucket] }
     else { limits["rateLimits"] = bucket }
-    let account: [String: Any] = ["id": 1, "result": ["account": ["planType": "plus"]]]
+    var identity: [String: Any] = ["planType": "plus", "type": type]
+    identity["email"] = email
+    let account: [String: Any] = ["id": 1, "result": ["account": identity]]
     var data = try JSONSerialization.data(withJSONObject: account)
     data.append(10)
     data.append(try JSONSerialization.data(withJSONObject: ["id": 2, "result": limits]))
@@ -160,3 +162,14 @@ do {
     check(false, "다른 계정의 응답은 거부해야 합니다")
 } catch UsageProviderError.accountChanged {}
 print("Codex response parsing smoke: PASS")
+
+let emailResponse = try codexResponse(used: 12, email: "account@example.test")
+check(AppServerUsageProvider.accountLabel(from: emailResponse) == "account@example.test", "응답의 계정 이메일을 읽습니다")
+let noEmailResponse = try codexResponse(used: 12)
+check(AppServerUsageProvider.accountLabel(from: noEmailResponse) == nil, "이메일이 없으면 추측하지 않습니다")
+let apiKeyResponse = try codexResponse(used: 12, email: "  ", type: "apiKey")
+check(AppServerUsageProvider.accountLabel(from: apiKeyResponse) == "API 키", "API 키 인증을 구분합니다")
+let emailSnapshot = try AppServerUsageProvider.parseSnapshot(from: emailResponse, accountKey: accountAKey)
+let emailJSON = String(decoding: try UsageSnapshotCodec.encoder.encode(emailSnapshot), as: UTF8.self)
+check(!emailJSON.contains("account@example.test"), "캐시와 위젯용 스냅샷에 이메일이 없어야 합니다")
+print("Account label privacy smoke: PASS")

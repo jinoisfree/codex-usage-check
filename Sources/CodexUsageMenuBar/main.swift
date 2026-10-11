@@ -13,6 +13,17 @@ final class UsageViewModel: ObservableObject {
     @Published var menuMode = UserDefaults.standard.string(forKey: "usageMenuMode") ?? "both" {
         didSet { UserDefaults.standard.set(menuMode, forKey: "usageMenuMode") }
     }
+    @Published var showAccounts = UserDefaults.standard.bool(forKey: "usageShowAccounts") {
+        didSet {
+            UserDefaults.standard.set(showAccounts, forKey: "usageShowAccounts")
+            claudeAccountGeneration += 1
+            if showAccounts { Task { await refreshClaudeAccount() } }
+            else { claudeAccount = nil }
+        }
+    }
+    @Published var codexAccount: String?
+    @Published var claudeAccount: String?
+    private var claudeAccountGeneration = 0
     @Published var showingUsed = false
     @Published var connectionMessage: String?
     @Published var claudeDirectEnabled = readClaudeDirectConsent()
@@ -29,7 +40,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     private var pollingTask: Task<Void, Never>?
-    private var refreshTask: Task<UsageSnapshot?, Never>?
+    private var refreshTask: Task<(snapshot: UsageSnapshot, account: String?)?, Never>?
     private var retryTask: Task<Void, Never>?
     private var observedAccountKey: String?
     private var refreshGeneration = 0
@@ -55,6 +66,7 @@ final class UsageViewModel: ObservableObject {
         let nextAccountKey = try? AccountIdentity.activeFingerprint()
         guard nextAccountKey != observedAccountKey || snapshot.source == "codex-unavailable" else { return }
 
+        codexAccount = nil
         observedAccountKey = nextAccountKey
         refreshGeneration += 1
         refreshTask?.cancel()
@@ -83,7 +95,7 @@ final class UsageViewModel: ObservableObject {
 
         let generation = refreshGeneration
         let task = Task {
-            try? await AppServerUsageProvider().loadSnapshot()
+            try? await AppServerUsageProvider().loadSnapshotWithAccount()
         }
         refreshTask = task
         let live = await task.value
@@ -95,8 +107,9 @@ final class UsageViewModel: ObservableObject {
         }
         refreshTask = nil
 
-        if let live, live.accountKey == expectedAccountKey {
-            apply(live)
+        if let live, live.snapshot.accountKey == expectedAccountKey {
+            codexAccount = live.account
+            apply(live.snapshot)
             return
         }
 
@@ -126,7 +139,7 @@ final class UsageViewModel: ObservableObject {
         WidgetCenter.shared.reloadAllTimelines()
     }
 
-    func refreshClaude() async {
+    func refreshClaude(forceAccount: Bool = false) async {
         guard let script = Bundle.main.url(forResource: "claude_bridge", withExtension: "py") else {
             claudeSnapshot = .unavailable("Claude 수집기 설치 필요", service: .claude)
             return
@@ -135,11 +148,54 @@ final class UsageViewModel: ObservableObject {
         let next = await ClaudeUsageProvider(scriptURL: script).loadSnapshot()
         guard generation == claudeRefreshGeneration else { return }
         let changed = !next.hasSameWidgetContent(as: claudeSnapshot)
+        let accountChanged = next.accountKey != claudeSnapshot.accountKey
+        if accountChanged {
+            claudeAccountGeneration += 1
+            claudeAccount = nil
+        }
         claudeSnapshot = next
         if changed {
             try? ServiceUsageCache.writeClaude(next)
             WidgetCenter.shared.reloadAllTimelines()
         }
+        if showAccounts && (forceAccount || accountChanged || claudeAccount == nil) {
+            await refreshClaudeAccount()
+        }
+    }
+
+    private func refreshClaudeAccount() async {
+        guard showAccounts, !changingClaudeDirect,
+              let script = Bundle.main.url(forResource: "claude_bridge", withExtension: "py") else { return }
+        claudeAccountGeneration += 1
+        let generation = claudeAccountGeneration
+        let expectedKey = claudeSnapshot.accountKey
+        let label = await Task.detached(priority: .utility) { () -> String? in
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            process.arguments = [script.path, "account"]
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            process.standardInput = FileHandle.nullDevice
+            do {
+                try process.run()
+                let timeout = DispatchWorkItem {
+                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: timeout)
+                defer { timeout.cancel() }
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0,
+                      let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let label = json["label"] as? String,
+                      !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                return label
+            } catch { return nil }
+        }.value
+        guard showAccounts, generation == claudeAccountGeneration,
+              expectedKey == claudeSnapshot.accountKey else { return }
+        claudeAccount = label
     }
 
     func connectClaude() async {
@@ -151,12 +207,15 @@ final class UsageViewModel: ObservableObject {
     func setClaudeDirect(_ enabled: Bool) async {
         guard !changingClaudeDirect else { return }
         changingClaudeDirect = true
+        claudeAccountGeneration += 1
+        claudeAccount = nil
         claudeRefreshGeneration += 1
         let result = await runClaudeCommand(enabled ? "enable-desktop-direct" : "disable-desktop-direct")
         claudeDirectEnabled = Self.readClaudeDirectConsent()
         connectionMessage = result.succeeded ? nil : result.message
         await refreshClaude()
         changingClaudeDirect = false
+        await refreshClaudeAccount()
     }
 
     private func runClaudeCommand(_ mode: String) async -> (message: String, succeeded: Bool) {
@@ -250,7 +309,7 @@ final class CodexUsageAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 332, height: 474)
+        popover.contentSize = NSSize(width: 332, height: 554)
         popover.contentViewController = NSHostingController(
             rootView: UnifiedUsagePopover(model: model)
                 .frame(width: 316)
@@ -376,15 +435,16 @@ private struct UnifiedUsagePopover: View {
                 Text("Codex").tag("codex")
                 Text("Claude").tag("claude")
             }.pickerStyle(.segmented)
-            serviceCard("Codex", snapshot: model.snapshot.displaySnapshot(), color: .green)
+            serviceCard("Codex", snapshot: model.snapshot.displaySnapshot(), color: .green, account: model.codexAccount)
             Divider()
-            serviceCard("Claude", snapshot: model.claudeSnapshot.displaySnapshot(), color: .orange)
+            serviceCard("Claude", snapshot: model.claudeSnapshot.displaySnapshot(), color: .orange, account: model.claudeAccount)
             Toggle("Claude 직접 조회", isOn: Binding(
                 get: { model.claudeDirectEnabled },
                 set: { enabled in Task { await model.setClaudeDirect(enabled) } }
             ))
                 .font(.caption)
                 .disabled(model.changingClaudeDirect)
+            Toggle("추적 계정 표시", isOn: $model.showAccounts).font(.caption)
             HStack {
                 Button("Claude 열기") {
                     NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Claude.app"))
@@ -392,7 +452,7 @@ private struct UnifiedUsagePopover: View {
                 Spacer()
                 Button("새로고침") {
                     Task { await model.refresh() }
-                    Task { await model.refreshClaude() }
+                    Task { await model.refreshClaude(forceAccount: true) }
                 }
             }
             Text(model.claudeSnapshot.detail ?? model.connectionMessage ?? (model.claudeSnapshot.source == "claude-desktop-direct"
@@ -404,12 +464,17 @@ private struct UnifiedUsagePopover: View {
         .padding(8)
     }
 
-    private func serviceCard(_ title: String, snapshot: UsageSnapshot, color: Color) -> some View {
+    private func serviceCard(_ title: String, snapshot: UsageSnapshot, color: Color, account: String?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title).font(.headline)
                 Spacer()
                 Text(snapshot.plan).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if model.showAccounts {
+                Text(account ?? (snapshot.accountKey == nil ? "로그인 상태 확인 필요" : "계정 확인 중"))
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             }
             if let message = snapshot.statusMessage {
                 Text(message).foregroundStyle(.secondary).font(.caption)
